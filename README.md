@@ -1,5 +1,23 @@
 # paper-reading-workflow
 
+## 最新更新（2026-04-26）
+
+本次发布新增并改进了以下工作流能力：
+
+- **精读 DOCX/PDF 包**：对已经生成 Markdown 总结的条目，可一键生成 `deep_reading_package/`，其中包含精读版 `.docx`、`.pdf` 和 `deep_reading_manifest.json`。
+- **GUI 操作入口**：在 collection 页面新增 `Deep DOCX/PDF Package` 按钮；点击 `Generate / Attach Summary` 时，如果条目已有总结，会弹出三个选项：重新生成总结、生成精读 DOCX/PDF 包、AI 检查规范性。
+- **总结完成后联动**：新总结生成完成后，GUI 会询问是否立即生成精读 DOCX/PDF 包。
+- **Zotero 链接回写**：启用 `zotero_api` 且配置 `ZOTERO_API_KEY` 后，精读包中的 DOCX/PDF 会作为 Zotero linked-file 附件写回原条目，同时摘要 note 中包含精读包链接。
+- **PDF 图表裁剪改进**：图表抽取不再只依赖图注上方固定裁剪，改为基于 PyMuPDF 的同栏图像/矢量对象候选框合并策略，减少截到正文、漏截边界和图像不完整的问题。
+- **AI 规范性检查**：新增 `check-summary` 子命令，可对已有 Markdown 总结做结构、证据、图表/公式风险和规范性检查。
+
+相关命令：
+
+```powershell
+.\03-tools\pdf_tools\.venv\Scripts\python.exe .\05-zotero_obsidian_sync\sync_pipeline.py deep-package --pdf "D:/papers/example.pdf"
+.\03-tools\pdf_tools\.venv\Scripts\python.exe .\05-zotero_obsidian_sync\sync_pipeline.py check-summary --pdf "D:/papers/example.pdf"
+```
+
 `paper-reading-workflow` 是一个面向学术文献阅读的本地自动化工作流，支持从 PDF 与 Zotero 元数据中提取信息，调用大语言模型生成单篇论文总结或多篇论文对比报告，并将结果组织为适合 Obsidian 长期维护的 Markdown 文档库。
 
 ![工作流总览](docs/assets/workflow-overview.svg)
