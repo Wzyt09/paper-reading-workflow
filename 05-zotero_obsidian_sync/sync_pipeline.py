@@ -2716,6 +2716,27 @@ def find_existing_summary_attachment(children: list[dict[str, Any]], filename: s
     return None
 
 
+def find_existing_linked_file_attachment(
+    children: list[dict[str, Any]],
+    filename: str,
+    *,
+    title_prefix: str,
+) -> dict[str, Any] | None:
+    for child in children:
+        data = child.get("data", {})
+        if data.get("itemType") != "attachment":
+            continue
+        title = first_nonempty(data.get("title"))
+        existing_filename = first_nonempty(data.get("filename"))
+        path_value = first_nonempty(data.get("path"))
+        path_name = Path(path_value).name if path_value else ""
+        if title.startswith(SUMMARY_ATTACHMENT_TITLE_PREFIX) and title_prefix != SUMMARY_ATTACHMENT_TITLE_PREFIX:
+            continue
+        if title.startswith(title_prefix) or existing_filename == filename or path_name == filename:
+            return child
+    return None
+
+
 def ensure_zotero_summary_note(config: Config, parent_item_key: str, record: dict[str, Any]) -> None:
     children = zotero_get_children(config, parent_item_key)
     existing = find_existing_summary_note(children)
@@ -2941,21 +2962,25 @@ def ensure_zotero_linked_file_attachment(
     if not file_path.exists():
         return
     children = zotero_get_children(config, parent_item_key)
-    existing = find_existing_summary_attachment(children, file_path.name)
+    existing = find_existing_linked_file_attachment(children, file_path.name, title_prefix=title_prefix)
     title = f"{title_prefix}: {file_path.name}"
     if existing is not None:
         current = zotero_get_item(config, existing["key"])
         data = current["data"]
-        existing_mode = first_nonempty(data.get("linkMode")).lower()
-        if existing_mode and existing_mode != "linked_file":
-            zotero_delete_item(config, existing["key"], current.get("version"))
+        existing_title = first_nonempty(data.get("title"))
+        if existing_title.startswith(SUMMARY_ATTACHMENT_TITLE_PREFIX) and title_prefix != SUMMARY_ATTACHMENT_TITLE_PREFIX:
             existing = None
         else:
-            data["title"] = title
-            data["contentType"] = content_type
-            data["path"] = str(file_path.resolve())
-            zotero_put_item(config, existing["key"], data)
-            return
+            existing_mode = first_nonempty(data.get("linkMode")).lower()
+            if existing_mode and existing_mode != "linked_file":
+                zotero_delete_item(config, existing["key"], current.get("version"))
+                existing = None
+            else:
+                data["title"] = title
+                data["contentType"] = content_type
+                data["path"] = str(file_path.resolve())
+                zotero_put_item(config, existing["key"], data)
+                return
     zotero_create_items(
         config,
         [
@@ -3298,7 +3323,62 @@ def deep_package_dir_for_record(record: dict[str, Any]) -> Path:
     return summary_md.parent / f"{summary_md.stem}_deep_reading_package"
 
 
-def write_deep_docx(record: dict[str, Any], summary_text: str, images: list[Path], output_path: Path) -> None:
+def record_authors_text(record: dict[str, Any]) -> str:
+    authors = record.get("authors", [])
+    if isinstance(authors, list):
+        return ", ".join(str(author) for author in authors if author)
+    return first_nonempty(authors)
+
+
+def summary_excerpt_lines(summary_text: str, limit: int = 80) -> list[tuple[str, str]]:
+    excerpt: list[tuple[str, str]] = []
+    for kind, value in markdown_plain_lines(summary_text):
+        if not value or value.startswith("|"):
+            continue
+        if kind.startswith("h"):
+            excerpt.append((kind, value[:220]))
+        elif value.startswith(("- ", "* ")):
+            excerpt.append(("bullet", value[2:].strip()[:260]))
+        elif re.match(r"^\d+\.\s+", value):
+            excerpt.append(("number", re.sub(r"^\d+\.\s+", "", value).strip()[:260]))
+        else:
+            excerpt.append(("para", value[:360]))
+        if len(excerpt) >= limit:
+            break
+    return excerpt
+
+
+def image_audit_issue_text(audit: dict[str, Any] | None) -> str:
+    if not audit:
+        return "No image QA data was available."
+    issue_counts = audit.get("issue_counts") if isinstance(audit.get("issue_counts"), dict) else {}
+    if not issue_counts:
+        return "No obvious missing, tiny, or full-page-like image references were detected by the local check."
+    return "; ".join(f"{key}: {value}" for key, value in sorted(issue_counts.items()))
+
+
+def image_audit_entry_for_path(audit: dict[str, Any] | None, image_path: Path) -> dict[str, Any] | None:
+    if not audit:
+        return None
+    for entry in audit.get("entries", []):
+        if not isinstance(entry, dict):
+            continue
+        resolved = first_nonempty(entry.get("resolved_path"))
+        if resolved and Path(resolved).name == image_path.name:
+            return entry
+    return None
+
+
+def write_deep_docx(
+    record: dict[str, Any],
+    summary_text: str,
+    images: list[Path],
+    output_path: Path,
+    *,
+    image_audit: dict[str, Any] | None = None,
+    summary_md: Path | None = None,
+    package_dir: Path | None = None,
+) -> None:
     try:
         from docx import Document
         from docx.shared import Inches, Pt
@@ -3315,16 +3395,18 @@ def write_deep_docx(record: dict[str, Any], summary_text: str, images: list[Path
     title = record.get("title") or record.get("summary_stem") or "Deep Reading Package"
     document.add_heading(str(title), level=0)
     meta = document.add_paragraph()
-    meta.add_run("Deep reading package generated by local Paper Reading Workflow.").italic = True
+    meta.add_run("Deep reading index generated by local Paper Reading Workflow.").italic = True
     info = document.add_table(rows=0, cols=2)
     info.style = "Table Grid"
     for label, value in (
         ("Year", record.get("year", "")),
         ("Source", record.get("source", "")),
-        ("Authors", ", ".join(record.get("authors", []) if isinstance(record.get("authors"), list) else [])),
+        ("Authors", record_authors_text(record)),
         ("DOI", record.get("doi", "")),
         ("arXiv", record.get("arxiv", "")),
         ("PDF", record.get("pdf_path", "")),
+        ("Markdown summary", str(summary_md.resolve()) if summary_md else record.get("summary_md", "")),
+        ("Summary package", str(package_dir.resolve()) if package_dir else record.get("package_dir", "")),
     ):
         if not value:
             continue
@@ -3332,23 +3414,44 @@ def write_deep_docx(record: dict[str, Any], summary_text: str, images: list[Path
         row[0].text = label
         row[1].text = str(value)
 
-    document.add_heading("Reading Notes", level=1)
-    for kind, value in markdown_plain_lines(summary_text):
+    document.add_heading("Image Reference QA", level=1)
+    qa = document.add_table(rows=0, cols=2)
+    qa.style = "Table Grid"
+    for label, value in (
+        ("Image references checked", image_audit.get("image_ref_count", 0) if image_audit else 0),
+        ("Suspect references", image_audit.get("suspect_count", 0) if image_audit else 0),
+        ("Issue counts", image_audit_issue_text(image_audit)),
+    ):
+        row = qa.add_row().cells
+        row[0].text = str(label)
+        row[1].text = str(value)
+
+    document.add_heading("Summary Excerpt", level=1)
+    document.add_paragraph("The Markdown file remains the canonical full summary. This DOCX keeps a compact reading index plus image QA to avoid lossy document conversion.")
+    for kind, value in summary_excerpt_lines(summary_text):
         if kind == "h1":
             document.add_heading(value, level=1)
         elif kind in {"h2", "h3"}:
             document.add_heading(value, level=2 if kind == "h2" else 3)
-        elif value.startswith(("- ", "* ")):
-            document.add_paragraph(value[2:].strip(), style="List Bullet")
-        elif re.match(r"^\d+\.\s+", value):
-            document.add_paragraph(re.sub(r"^\d+\.\s+", "", value), style="List Number")
+        elif kind == "bullet":
+            document.add_paragraph(value, style="List Bullet")
+        elif kind == "number":
+            document.add_paragraph(value, style="List Number")
         else:
             document.add_paragraph(value)
 
     if images:
         document.add_heading("Key Figures And Formula Snapshots", level=1)
-        for image_path in images:
-            document.add_paragraph(image_path.name)
+        for image_path in images[:8]:
+            entry = image_audit_entry_for_path(image_audit, image_path)
+            dimensions = entry.get("dimensions") if entry else image_dimensions_for_file(image_path)
+            issues = ", ".join(entry.get("issues", [])) if entry else ""
+            caption = image_path.name
+            if dimensions:
+                caption += f" ({dimensions[0]} x {dimensions[1]})"
+            if issues:
+                caption += f" - check: {issues}"
+            document.add_paragraph(caption)
             try:
                 document.add_picture(str(image_path), width=Inches(5.8))
             except Exception as exc:
@@ -3358,7 +3461,16 @@ def write_deep_docx(record: dict[str, Any], summary_text: str, images: list[Path
     document.save(str(output_path))
 
 
-def write_deep_pdf(record: dict[str, Any], summary_text: str, images: list[Path], output_path: Path) -> None:
+def write_deep_pdf(
+    record: dict[str, Any],
+    summary_text: str,
+    images: list[Path],
+    output_path: Path,
+    *,
+    image_audit: dict[str, Any] | None = None,
+    summary_md: Path | None = None,
+    package_dir: Path | None = None,
+) -> None:
     try:
         import fitz
     except Exception as exc:
@@ -3373,36 +3485,58 @@ def write_deep_pdf(record: dict[str, Any], summary_text: str, images: list[Path]
         page = doc.new_page(width=width, height=height)
         return page, margin
 
+    def split_display_line(text: str, limit: int = 92) -> list[str]:
+        text = str(text)
+        if len(text) <= limit:
+            return [text]
+        return [text[index : index + limit] for index in range(0, len(text), limit)]
+
+    def add_text(page: Any, y: float, text: str, *, fontsize: int = 10, bold: bool = False) -> tuple[Any, float]:
+        nonlocal doc
+        line_height = fontsize + 6
+        for line in split_display_line(text, 72 if fontsize >= 13 else 92):
+            if y + line_height > height - margin:
+                page, y = new_page()
+            page.insert_text((margin, y), line, fontsize=fontsize, fontname=font)
+            y += line_height + (2 if bold else 0)
+        return page, y
+
     page, y = new_page()
     title = str(record.get("title") or record.get("summary_stem") or "Deep Reading Package")
-    y += page.insert_textbox(fitz.Rect(margin, y, width - margin, y + 64), title, fontsize=18, fontname=font)
-    y += 16
+    page, y = add_text(page, y, title, fontsize=18, bold=True)
+    y += 12
     metadata_lines = [
         f"Year: {record.get('year', '')}",
         f"Source: {record.get('source', '')}",
-        f"Authors: {', '.join(record.get('authors', []) if isinstance(record.get('authors'), list) else [])}",
-        f"PDF: {record.get('pdf_path', '')}",
+        f"Authors: {record_authors_text(record)}",
+        f"Original PDF: {record.get('pdf_path', '')}",
+        f"Markdown summary: {str(summary_md.resolve()) if summary_md else record.get('summary_md', '')}",
+        f"Summary package: {str(package_dir.resolve()) if package_dir else record.get('package_dir', '')}",
     ]
     for line in metadata_lines:
         if line.endswith(": "):
             continue
-        y += page.insert_textbox(fitz.Rect(margin, y, width - margin, y + 38), line, fontsize=9, fontname=font)
-        y += 4
+        page, y = add_text(page, y, line, fontsize=9)
 
-    for kind, value in markdown_plain_lines(summary_text):
-        font_size = 13 if kind in {"h1", "h2"} else 10
-        box_height = 54 if kind in {"h1", "h2"} else 42
-        if y + box_height > height - margin:
-            page, y = new_page()
-        text = value[:1400]
-        y += page.insert_textbox(fitz.Rect(margin, y, width - margin, y + box_height), text, fontsize=font_size, fontname=font)
-        y += 6
+    y += 8
+    page, y = add_text(page, y, "Image Reference QA", fontsize=14, bold=True)
+    page, y = add_text(page, y, f"Image references checked: {image_audit.get('image_ref_count', 0) if image_audit else 0}", fontsize=10)
+    page, y = add_text(page, y, f"Suspect references: {image_audit.get('suspect_count', 0) if image_audit else 0}", fontsize=10)
+    page, y = add_text(page, y, f"Issue counts: {image_audit_issue_text(image_audit)}", fontsize=10)
 
-    for image_path in images:
-        if y + 230 > height - margin:
+    y += 8
+    page, y = add_text(page, y, "Summary Excerpt", fontsize=14, bold=True)
+    page, y = add_text(page, y, "The Markdown file remains the canonical full summary. This PDF is a compact reading index and QA report.", fontsize=10)
+    for kind, value in summary_excerpt_lines(summary_text, limit=55):
+        font_size = 12 if kind in {"h1", "h2"} else 9
+        prefix = "- " if kind in {"bullet", "number"} else ""
+        page, y = add_text(page, y, f"{prefix}{value}", fontsize=font_size, bold=kind in {"h1", "h2"})
+        y += 2
+
+    for image_path in images[:4]:
+        if y + 220 > height - margin:
             page, y = new_page()
-        y += page.insert_textbox(fitz.Rect(margin, y, width - margin, y + 22), image_path.name, fontsize=9, fontname=font)
-        y += 4
+        page, y = add_text(page, y, image_path.name, fontsize=9)
         try:
             pix = fitz.Pixmap(str(image_path))
             img_w = width - 2 * margin
@@ -3414,8 +3548,8 @@ def write_deep_pdf(record: dict[str, Any], summary_text: str, images: list[Path]
             page.insert_image(fitz.Rect(margin, y, margin + img_w, y + img_h), filename=str(image_path))
             y += img_h + 14
         except Exception as exc:
-            y += page.insert_textbox(fitz.Rect(margin, y, width - margin, y + 32), f"[image skipped: {exc}]", fontsize=9, fontname=font)
-            y += 8
+            page, y = add_text(page, y, f"[image skipped: {exc}]", fontsize=9)
+            y += 6
 
     ensure_dir(output_path.parent)
     doc.save(str(output_path))
@@ -3438,14 +3572,39 @@ def generate_deep_reading_package(config: Config, record: dict[str, Any]) -> dic
     pdf_path = output_dir / f"{stem}-deep-reading.pdf"
     manifest_path = output_dir / "deep_reading_manifest.json"
     log(f"[deep-package] {summary_md.name}")
-    write_deep_docx(record, summary_text, images, docx_path)
-    write_deep_pdf(record, summary_text, images, pdf_path)
+    audit_record = dict(record)
+    audit_record["summary_md"] = str(summary_md)
+    audit_record["package_dir"] = str(package_dir)
+    image_audit = build_image_reference_audit(audit_record, summary_text)
+    write_deep_docx(
+        record,
+        summary_text,
+        images,
+        docx_path,
+        image_audit=image_audit,
+        summary_md=summary_md,
+        package_dir=package_dir,
+    )
+    write_deep_pdf(
+        record,
+        summary_text,
+        images,
+        pdf_path,
+        image_audit=image_audit,
+        summary_md=summary_md,
+        package_dir=package_dir,
+    )
     manifest = {
         "summary_md": str(summary_md.resolve()),
         "package_dir": str(package_dir.resolve()),
         "docx": str(docx_path.resolve()),
         "pdf": str(pdf_path.resolve()),
         "images": [str(path) for path in images],
+        "image_qa": {
+            "image_ref_count": image_audit.get("image_ref_count", 0),
+            "suspect_count": image_audit.get("suspect_count", 0),
+            "issue_counts": image_audit.get("issue_counts", {}),
+        },
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")

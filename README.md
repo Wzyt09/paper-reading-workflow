@@ -1,5 +1,10 @@
 # paper-reading-workflow
 
+## 修复记录（2026-04-26）
+
+- 修复生成精读 DOCX/PDF 包时，Zotero 深度包 linked-file 附件误匹配并覆盖原 `AI Summary (Codex)` Markdown 总结附件的问题。现在 Markdown 总结、精读 DOCX、精读 PDF 会作为独立附件共存。
+- 调整精读 DOCX/PDF 输出策略：DOCX/PDF 不再尝试粗暴转换完整 Markdown，而是生成更稳定的精读索引、原始文件链接、图片引用 QA 摘要和关键图表预览；完整内容仍以 Markdown 总结为准。
+
 ## 最新更新（2026-04-26）
 
 本次发布新增并改进了以下工作流能力：
