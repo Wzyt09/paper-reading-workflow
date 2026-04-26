@@ -1,0 +1,25 @@
+{
+  "summary_backend": "openai_compatible",
+  "llm": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "model": "deepseek-chat",
+    "temperature": 0.2
+  },
+  "zotero": {
+    "bbt_export_path": "D:/paper-reading-data/zotero_export.json"
+  },
+  "obsidian": {
+    "vault_dir": "D:/Obsidian/PaperVault",
+    "papers_subdir": "papers",
+    "tags_subdir": "tags",
+    "tag_prefix": "paper"
+  },
+  "zotero_writeback": {
+    "enabled": false,
+    "api_key_env": "ZOTERO_API_KEY",
+    "attach_summary_markdown": true,
+    "summary_attachment_mode": "link"
+  }
+}

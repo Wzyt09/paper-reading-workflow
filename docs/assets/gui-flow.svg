@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="330" viewBox="0 0 1040 330" role="img" aria-labelledby="title desc">
+  <title id="title">GUI flow</title>
+  <desc id="desc">The GUI guides users through selecting papers, entering questions, generating summaries, and reviewing output.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+    <style>
+      .bg{fill:#ffffff}
+      .step{fill:#f8fafc;stroke:#94a3b8;stroke-width:2;rx:8}
+      .dialog{fill:#fff7ed;stroke:#ea580c;stroke-width:2;rx:8}
+      .done{fill:#ecfdf5;stroke:#059669;stroke-width:2;rx:8}
+      .text{font-family:Segoe UI,Arial,sans-serif;font-size:19px;fill:#0f172a}
+      .small{font-family:Segoe UI,Arial,sans-serif;font-size:14px;fill:#475569}
+      .line{stroke:#475569;stroke-width:2.5;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect class="bg" width="1040" height="330"/>
+  <rect class="step" x="45" y="100" width="180" height="120"/>
+  <text class="text" x="135" y="145" text-anchor="middle">Select Papers</text>
+  <text class="small" x="135" y="174" text-anchor="middle">PDF or Zotero items</text>
+  <path class="line" d="M225 160 H295"/>
+  <rect class="dialog" x="305" y="80" width="200" height="160"/>
+  <text class="text" x="405" y="128" text-anchor="middle">User Request</text>
+  <text class="small" x="405" y="158" text-anchor="middle">questions, focus</text>
+  <text class="small" x="405" y="184" text-anchor="middle">output preference</text>
+  <path class="line" d="M505 160 H575"/>
+  <rect class="step" x="585" y="100" width="180" height="120"/>
+  <text class="text" x="675" y="145" text-anchor="middle">Generate</text>
+  <text class="small" x="675" y="174" text-anchor="middle">extract and summarize</text>
+  <path class="line" d="M765 160 H835"/>
+  <rect class="done" x="845" y="100" width="150" height="120"/>
+  <text class="text" x="920" y="145" text-anchor="middle">Review</text>
+  <text class="small" x="920" y="174" text-anchor="middle">Markdown, links</text>
+</svg>

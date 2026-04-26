@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="360" viewBox="0 0 1040 360" role="img" aria-labelledby="title desc">
+  <title id="title">Workflow overview</title>
+  <desc id="desc">PDF and Zotero metadata are extracted, summarized by an LLM, then written to Obsidian and Zotero.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .box{fill:#ffffff;stroke:#cbd5e1;stroke-width:2;rx:8}
+      .box2{fill:#ecfeff;stroke:#0891b2;stroke-width:2;rx:8}
+      .box3{fill:#f0fdf4;stroke:#16a34a;stroke-width:2;rx:8}
+      .text{font-family:Segoe UI,Arial,sans-serif;font-size:20px;fill:#0f172a}
+      .small{font-family:Segoe UI,Arial,sans-serif;font-size:14px;fill:#475569}
+      .line{stroke:#334155;stroke-width:2.5;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1040" height="360"/>
+  <rect class="box" x="40" y="70" width="170" height="110"/>
+  <text class="text" x="125" y="118" text-anchor="middle">PDF Files</text>
+  <text class="small" x="125" y="148" text-anchor="middle">source papers</text>
+  <rect class="box" x="40" y="205" width="170" height="90"/>
+  <text class="text" x="125" y="246" text-anchor="middle">Zotero</text>
+  <text class="small" x="125" y="272" text-anchor="middle">metadata, links</text>
+  <path class="line" d="M210 125 H290"/>
+  <path class="line" d="M210 250 H265 C280 250 280 170 295 170"/>
+  <rect class="box2" x="300" y="95" width="190" height="150"/>
+  <text class="text" x="395" y="145" text-anchor="middle">Extraction</text>
+  <text class="small" x="395" y="174" text-anchor="middle">text, figures, refs</text>
+  <text class="small" x="395" y="199" text-anchor="middle">manifest data</text>
+  <path class="line" d="M490 170 H575"/>
+  <rect class="box2" x="585" y="95" width="180" height="150"/>
+  <text class="text" x="675" y="140" text-anchor="middle">LLM Summary</text>
+  <text class="small" x="675" y="169" text-anchor="middle">default rules</text>
+  <text class="small" x="675" y="194" text-anchor="middle">user questions</text>
+  <path class="line" d="M765 170 H850"/>
+  <rect class="box3" x="860" y="70" width="140" height="90"/>
+  <text class="text" x="930" y="110" text-anchor="middle">Obsidian</text>
+  <text class="small" x="930" y="136" text-anchor="middle">Markdown vault</text>
+  <rect class="box3" x="860" y="205" width="140" height="90"/>
+  <text class="text" x="930" y="245" text-anchor="middle">Zotero</text>
+  <text class="small" x="930" y="271" text-anchor="middle">notes, links</text>
+  <path class="line" d="M930 160 V202"/>
+</svg>

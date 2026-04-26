@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="420" viewBox="0 0 1040 420" role="img" aria-labelledby="title desc">
+  <title id="title">Configuration map</title>
+  <desc id="desc">The config file connects model providers, Zotero, Obsidian, and local storage.</desc>
+  <defs>
+    <style>
+      .bg{fill:#ffffff}
+      .center{fill:#fefce8;stroke:#ca8a04;stroke-width:2;rx:8}
+      .card{fill:#f8fafc;stroke:#cbd5e1;stroke-width:2;rx:8}
+      .accent{fill:#eff6ff;stroke:#2563eb;stroke-width:2;rx:8}
+      .text{font-family:Segoe UI,Arial,sans-serif;font-size:20px;fill:#0f172a}
+      .small{font-family:Consolas,Menlo,monospace;font-size:14px;fill:#475569}
+      .line{stroke:#64748b;stroke-width:2}
+    </style>
+  </defs>
+  <rect class="bg" width="1040" height="420"/>
+  <rect class="center" x="410" y="150" width="220" height="120"/>
+  <text class="text" x="520" y="198" text-anchor="middle">config.json</text>
+  <text class="small" x="520" y="228" text-anchor="middle">local only, ignored by git</text>
+  <line class="line" x1="410" y1="190" x2="260" y2="110"/>
+  <line class="line" x1="630" y1="190" x2="780" y2="110"/>
+  <line class="line" x1="410" y1="230" x2="260" y2="315"/>
+  <line class="line" x1="630" y1="230" x2="780" y2="315"/>
+  <rect class="card" x="70" y="50" width="240" height="120"/>
+  <text class="text" x="190" y="90" text-anchor="middle">Model Backend</text>
+  <text class="small" x="190" y="118" text-anchor="middle">openai / compatible / codex</text>
+  <text class="small" x="190" y="142" text-anchor="middle">API key from env</text>
+  <rect class="accent" x="730" y="50" width="240" height="120"/>
+  <text class="text" x="850" y="90" text-anchor="middle">Zotero</text>
+  <text class="small" x="850" y="118" text-anchor="middle">sqlite or BBT export</text>
+  <text class="small" x="850" y="142" text-anchor="middle">optional write-back</text>
+  <rect class="accent" x="70" y="250" width="240" height="120"/>
+  <text class="text" x="190" y="290" text-anchor="middle">Obsidian</text>
+  <text class="small" x="190" y="318" text-anchor="middle">vault_dir, tags</text>
+  <text class="small" x="190" y="342" text-anchor="middle">Markdown output</text>
+  <rect class="card" x="730" y="250" width="240" height="120"/>
+  <text class="text" x="850" y="290" text-anchor="middle">Local Storage</text>
+  <text class="small" x="850" y="318" text-anchor="middle">PDF, extracted figures</text>
+  <text class="small" x="850" y="342" text-anchor="middle">comparison projects</text>
+</svg>

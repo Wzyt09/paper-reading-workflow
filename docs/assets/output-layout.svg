@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="460" viewBox="0 0 1040 460" role="img" aria-labelledby="title desc">
+  <title id="title">Output layout</title>
+  <desc id="desc">Generated summaries are stored as single-paper packages and comparison packages.</desc>
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}
+      .panel{fill:#ffffff;stroke:#cbd5e1;stroke-width:2;rx:8}
+      .folder{fill:#e0f2fe;stroke:#0284c7;stroke-width:2;rx:6}
+      .file{fill:#f0fdf4;stroke:#16a34a;stroke-width:2;rx:6}
+      .text{font-family:Segoe UI,Arial,sans-serif;font-size:19px;fill:#0f172a}
+      .small{font-family:Consolas,Menlo,monospace;font-size:14px;fill:#475569}
+    </style>
+  </defs>
+  <rect class="bg" width="1040" height="460"/>
+  <rect class="panel" x="50" y="40" width="430" height="370"/>
+  <text class="text" x="265" y="80" text-anchor="middle">Single Paper Package</text>
+  <rect class="folder" x="90" y="115" width="350" height="50"/>
+  <text class="small" x="110" y="146">2024-author-title/</text>
+  <rect class="file" x="120" y="185" width="290" height="42"/>
+  <text class="small" x="140" y="212">summary.md</text>
+  <rect class="file" x="120" y="240" width="290" height="42"/>
+  <text class="small" x="140" y="267">source.pdf</text>
+  <rect class="file" x="120" y="295" width="290" height="42"/>
+  <text class="small" x="140" y="322">manifest.json</text>
+  <rect class="folder" x="120" y="350" width="290" height="42"/>
+  <text class="small" x="140" y="377">_attachments/</text>
+  <rect class="panel" x="560" y="40" width="430" height="370"/>
+  <text class="text" x="775" y="80" text-anchor="middle">Comparison Package</text>
+  <rect class="folder" x="600" y="115" width="350" height="50"/>
+  <text class="small" x="620" y="146">comparisons/topic-date/</text>
+  <rect class="file" x="630" y="185" width="290" height="42"/>
+  <text class="small" x="650" y="212">comparison.md</text>
+  <rect class="file" x="630" y="240" width="290" height="42"/>
+  <text class="small" x="650" y="267">user_request.md</text>
+  <rect class="folder" x="630" y="295" width="290" height="42"/>
+  <text class="small" x="650" y="322">sources/</text>
+  <rect class="folder" x="630" y="350" width="290" height="42"/>
+  <text class="small" x="650" y="377">per-paper-summaries/</text>
+</svg>
