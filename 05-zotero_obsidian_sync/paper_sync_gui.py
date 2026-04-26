@@ -671,7 +671,6 @@ class PaperSyncGUI(tk.Tk):
         self.summary_progress_active = False
         self.summary_progress_total = 0
         self.summary_progress_outcome = ""
-        self.pending_deep_package_items: list[dict[str, Any]] = []
         self.summary_runtime_profiles = self._load_summary_runtime_profiles()
         self.summary_backend_var = tk.StringVar()
         self.summary_model_var = tk.StringVar()
@@ -1136,12 +1135,6 @@ class PaperSyncGUI(tk.Tk):
             command=self._summarize_selected_items,
         )
         self.btn_summarize.pack(side="left")
-        self.btn_deep_package = ttk.Button(
-            collection_actions,
-            text="Deep DOCX/PDF Package",
-            command=self._generate_deep_package_selected_items,
-        )
-        self.btn_deep_package.pack(side="left", padx=(8, 0))
         self.btn_compare = ttk.Button(
             collection_actions,
             text="Compare / 对比总结",
@@ -1507,8 +1500,6 @@ class PaperSyncGUI(tk.Tk):
                 self._append_summary_progress_log(str(payload))
             elif kind == "summary-progress-stage":
                 self._set_summary_progress_stage(str(payload))
-            elif kind == "summary-finished-items":
-                self.pending_deep_package_items = list(payload or []) if isinstance(payload, list) else []
             elif kind == "task-finished":
                 self._finish_background_task()
             elif kind == "error-dialog":
@@ -1762,14 +1753,6 @@ class PaperSyncGUI(tk.Tk):
         self._set_task("Idle")
         should_close = self.close_after_task and not self.background_task_failed
         self.close_after_task = False
-        pending_deep_package_items = self.pending_deep_package_items
-        self.pending_deep_package_items = []
-        if pending_deep_package_items and not self.background_task_failed and not should_close:
-            if messagebox.askyesno(
-                "Deep Reading Package",
-                "Summary generation finished. Generate the deep DOCX/PDF package now?",
-            ):
-                self.after(50, lambda items=pending_deep_package_items: self._generate_deep_package_for_items(items))
         if should_close:
             self.after(50, self.destroy)
 
@@ -1899,8 +1882,7 @@ class PaperSyncGUI(tk.Tk):
         body = ttk.Frame(dialog)
         body.pack(fill="both", expand=True, padx=16, pady=4)
         ttk.Button(body, text="1. 重新生成总结", command=lambda: choose("regenerate")).pack(fill="x", pady=4)
-        ttk.Button(body, text="2. 生成精读 DOCX/PDF 包", command=lambda: choose("deep-package")).pack(fill="x", pady=4)
-        ttk.Button(body, text="3. 检查规范性（AI）", command=lambda: choose("check-summary")).pack(fill="x", pady=4)
+        ttk.Button(body, text="2. 检查图片引用和裁剪", command=lambda: choose("check-summary")).pack(fill="x", pady=4)
         buttons = ttk.Frame(dialog)
         buttons.pack(fill="x", padx=16, pady=(4, 12))
         ttk.Button(buttons, text="取消", command=lambda: choose("cancel")).pack(side="right")
@@ -2030,21 +2012,6 @@ class PaperSyncGUI(tk.Tk):
             return False
         return True
 
-    def _generate_deep_package_for_items(self, items: list[dict[str, Any]]) -> bool:
-        return self._run_pipeline_for_items(
-            items,
-            command="deep-package",
-            task_label="Deep package",
-            progress_title="Generate Deep DOCX/PDF Package",
-        )
-
-    def _generate_deep_package_selected_items(self) -> None:
-        selected_items = self._selected_collection_items()
-        if not selected_items:
-            messagebox.showinfo("Paper Sync Manager", "Select one or more collection items first.")
-            return
-        self._generate_deep_package_for_items(selected_items)
-
     def _check_summary_selected_items(self, items: list[dict[str, Any]]) -> bool:
         return self._run_pipeline_for_items(
             items,
@@ -2064,9 +2031,6 @@ class PaperSyncGUI(tk.Tk):
         if existing_summary_items:
             action = self._ask_existing_summary_action()
             if action in (None, "cancel"):
-                return
-            if action == "deep-package":
-                self._generate_deep_package_for_items(existing_summary_items)
                 return
             if action == "check-summary":
                 self._check_summary_selected_items(existing_summary_items)

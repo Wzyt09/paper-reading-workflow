@@ -29,8 +29,6 @@ DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
 YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 SUMMARY_NOTE_MARKER = "codex-zotero-summary-note"
 SUMMARY_ATTACHMENT_TITLE_PREFIX = "AI Summary (Codex)"
-DEEP_PACKAGE_NOTE_MARKER = "codex-zotero-deep-reading-package"
-DEEP_PACKAGE_ATTACHMENT_TITLE_PREFIX = "Deep Reading Package (Codex)"
 EXTRACTOR_MIN_VERSION = 3
 
 
@@ -112,8 +110,8 @@ def parse_args() -> argparse.Namespace:
         "command",
         nargs="?",
         default="once",
-        choices=("once", "compare", "deep-package", "check-summary", "watch", "setup-bbt"),
-        help="Run once, compare selected PDFs, generate deep packages, QA summaries, watch, or setup Better BibTeX.",
+        choices=("once", "compare", "check-summary", "watch", "setup-bbt"),
+        help="Run once, compare selected PDFs, QA summaries, watch, or setup Better BibTeX.",
     )
     parser.add_argument(
         "--config",
@@ -1571,6 +1569,7 @@ def build_summary_prompt(
         f"本次用户补充要求和关键问题：\n{config.summary_user_request or '（无）'}\n\n"
         f"辅助元数据：\n{json.dumps(metadata_payload, ensure_ascii=False, indent=2)}\n\n"
         "写作要求补充：\n"
+        "- Image references must be conservative: only cite an image path that appears verbatim in the extracted Markdown and is clearly tied to the same figure/caption/formula. Do not guess image paths, do not cite page screenshots as figures, and do not insert an image when the match is uncertain.\n"
         "- 如果能从提取 Markdown 里识别到图片/图注/公式图片路径，可以在相关章节直接引用这些本地相对路径。\n"
         "- 如果不能可靠定位图片，就先保证文字总结和公式说明正确，打包阶段会补自动提取附录。\n"
         "- 不要省略 Methods、误差分析、资源估算、实验细节、补充材料中的关键技术信息。\n"
@@ -2667,24 +2666,11 @@ def build_summary_note_html(record: dict[str, Any]) -> str:
         parts.append(
             f"<li>Obsidian 副本：<a href=\"{html.escape(path_to_uri(obsidian_md))}\">{html.escape(obsidian_md.name)}</a></li>"
         )
-    deep_docx = Path(record["deep_package_docx"]) if record.get("deep_package_docx") else None
-    deep_pdf = Path(record["deep_package_pdf"]) if record.get("deep_package_pdf") else None
-    deep_dir = Path(record["deep_package_dir"]) if record.get("deep_package_dir") else None
-    if (deep_docx and deep_docx.exists()) or (deep_pdf and deep_pdf.exists()) or (deep_dir and deep_dir.exists()):
-        parts.append(f"<li><strong>精读 DOCX/PDF 包</strong> <span data-codex-marker=\"{DEEP_PACKAGE_NOTE_MARKER}\"></span><ul>")
-        if deep_docx and deep_docx.exists():
-            parts.append(
-                f"<li>DOCX：<a href=\"{html.escape(path_to_uri(deep_docx))}\">{html.escape(deep_docx.name)}</a></li>"
-            )
-        if deep_pdf and deep_pdf.exists():
-            parts.append(
-                f"<li>PDF：<a href=\"{html.escape(path_to_uri(deep_pdf))}\">{html.escape(deep_pdf.name)}</a></li>"
-            )
-        if deep_dir and deep_dir.exists():
-            parts.append(
-                f"<li>目录：<a href=\"{html.escape(path_to_uri(deep_dir))}\">{html.escape(str(deep_dir))}</a></li>"
-            )
-        parts.append("</ul></li>")
+    quality_check = Path(record["summary_quality_check"]) if record.get("summary_quality_check") else None
+    if quality_check and quality_check.exists():
+        parts.append(
+            f"<li>图片检查报告：<a href=\"{html.escape(path_to_uri(quality_check))}\">{html.escape(quality_check.name)}</a></li>"
+        )
     parts.append(f"<li>更新时间：{html.escape(record.get('generated_at', ''))}</li>")
     parts.append("</ul>")
     return "".join(parts)
@@ -2999,27 +2985,6 @@ def ensure_zotero_linked_file_attachment(
     )
 
 
-def ensure_zotero_deep_package_links(config: Config, parent_item_key: str, record: dict[str, Any]) -> None:
-    docx = Path(record["deep_package_docx"]) if record.get("deep_package_docx") else None
-    pdf = Path(record["deep_package_pdf"]) if record.get("deep_package_pdf") else None
-    if docx and docx.exists():
-        ensure_zotero_linked_file_attachment(
-            config,
-            parent_item_key,
-            docx,
-            title_prefix=DEEP_PACKAGE_ATTACHMENT_TITLE_PREFIX,
-            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
-    if pdf and pdf.exists():
-        ensure_zotero_linked_file_attachment(
-            config,
-            parent_item_key,
-            pdf,
-            title_prefix=DEEP_PACKAGE_ATTACHMENT_TITLE_PREFIX,
-            content_type="application/pdf",
-        )
-
-
 def sync_zotero_item_tags(config: Config, item_key: str, ai_tags: list[str]) -> None:
     """Merge *ai_tags* into the Zotero item's existing tags.
 
@@ -3057,11 +3022,6 @@ def sync_zotero_record(config: Config, record: dict[str, Any]) -> None:
             ensure_zotero_summary_attachment(config, item_key, record)
         except Exception as exc:
             log(f"[zotero] Summary attachment sync skipped for {record.get('summary_stem')}: {exc}")
-    if record.get("deep_package_docx") or record.get("deep_package_pdf"):
-        try:
-            ensure_zotero_deep_package_links(config, item_key, record)
-        except Exception as exc:
-            log(f"[zotero] Deep package link sync skipped for {record.get('summary_stem')}: {exc}")
     # Sync AI-generated tags from summary MD → Zotero item
     ai_tags = record.get("ai_tags", [])
     if ai_tags:
@@ -3288,332 +3248,37 @@ def render_image_audit_report(audit: dict[str, Any], ai_report: str | None) -> s
     return "\n".join(lines).rstrip() + "\n"
 
 
-def collect_deep_package_images(summary_text: str, package_dir: Path, limit: int = 12) -> list[Path]:
-    images: list[Path] = []
-    seen: set[str] = set()
-    for ref in markdown_image_refs(summary_text):
-        image_path = resolve_package_image(package_dir, ref)
-        if image_path is None:
-            continue
-        key = str(image_path)
-        if key in seen:
-            continue
-        seen.add(key)
-        images.append(image_path)
-        if len(images) >= limit:
-            break
-    images_dir = package_dir / "images"
-    if images_dir.is_dir() and len(images) < limit:
-        for image_path in sorted(images_dir.glob("*.png")):
-            key = str(image_path.resolve())
-            if key in seen:
-                continue
-            seen.add(key)
-            images.append(image_path.resolve())
-            if len(images) >= limit:
-                break
-    return images
-
-
-def deep_package_dir_for_record(record: dict[str, Any]) -> Path:
-    package_dir = Path(first_nonempty(record.get("package_dir")))
-    if package_dir:
-        return package_dir / "deep_reading_package"
-    summary_md = Path(first_nonempty(record.get("summary_md"), "summary.md"))
-    return summary_md.parent / f"{summary_md.stem}_deep_reading_package"
-
-
-def record_authors_text(record: dict[str, Any]) -> str:
-    authors = record.get("authors", [])
-    if isinstance(authors, list):
-        return ", ".join(str(author) for author in authors if author)
-    return first_nonempty(authors)
-
-
-def summary_excerpt_lines(summary_text: str, limit: int = 80) -> list[tuple[str, str]]:
-    excerpt: list[tuple[str, str]] = []
-    for kind, value in markdown_plain_lines(summary_text):
-        if not value or value.startswith("|"):
-            continue
-        if kind.startswith("h"):
-            excerpt.append((kind, value[:220]))
-        elif value.startswith(("- ", "* ")):
-            excerpt.append(("bullet", value[2:].strip()[:260]))
-        elif re.match(r"^\d+\.\s+", value):
-            excerpt.append(("number", re.sub(r"^\d+\.\s+", "", value).strip()[:260]))
-        else:
-            excerpt.append(("para", value[:360]))
-        if len(excerpt) >= limit:
-            break
-    return excerpt
-
-
-def image_audit_issue_text(audit: dict[str, Any] | None) -> str:
-    if not audit:
-        return "No image QA data was available."
-    issue_counts = audit.get("issue_counts") if isinstance(audit.get("issue_counts"), dict) else {}
-    if not issue_counts:
-        return "No obvious missing, tiny, or full-page-like image references were detected by the local check."
-    return "; ".join(f"{key}: {value}" for key, value in sorted(issue_counts.items()))
-
-
-def image_audit_entry_for_path(audit: dict[str, Any] | None, image_path: Path) -> dict[str, Any] | None:
-    if not audit:
-        return None
-    for entry in audit.get("entries", []):
-        if not isinstance(entry, dict):
-            continue
-        resolved = first_nonempty(entry.get("resolved_path"))
-        if resolved and Path(resolved).name == image_path.name:
-            return entry
-    return None
-
-
-def write_deep_docx(
-    record: dict[str, Any],
-    summary_text: str,
-    images: list[Path],
-    output_path: Path,
-    *,
-    image_audit: dict[str, Any] | None = None,
-    summary_md: Path | None = None,
-    package_dir: Path | None = None,
-) -> None:
-    try:
-        from docx import Document
-        from docx.shared import Inches, Pt
-    except Exception as exc:
-        raise SyncError(
-            "python-docx is required for deep DOCX package generation. "
-            "Run setup_windows.ps1 or install requirements.txt in the pdf_tools venv."
-        ) from exc
-
-    document = Document()
-    styles = document.styles
-    styles["Normal"].font.name = "Microsoft YaHei"
-    styles["Normal"].font.size = Pt(10.5)
-    title = record.get("title") or record.get("summary_stem") or "Deep Reading Package"
-    document.add_heading(str(title), level=0)
-    meta = document.add_paragraph()
-    meta.add_run("Deep reading index generated by local Paper Reading Workflow.").italic = True
-    info = document.add_table(rows=0, cols=2)
-    info.style = "Table Grid"
-    for label, value in (
-        ("Year", record.get("year", "")),
-        ("Source", record.get("source", "")),
-        ("Authors", record_authors_text(record)),
-        ("DOI", record.get("doi", "")),
-        ("arXiv", record.get("arxiv", "")),
-        ("PDF", record.get("pdf_path", "")),
-        ("Markdown summary", str(summary_md.resolve()) if summary_md else record.get("summary_md", "")),
-        ("Summary package", str(package_dir.resolve()) if package_dir else record.get("package_dir", "")),
-    ):
-        if not value:
-            continue
-        row = info.add_row().cells
-        row[0].text = label
-        row[1].text = str(value)
-
-    document.add_heading("Image Reference QA", level=1)
-    qa = document.add_table(rows=0, cols=2)
-    qa.style = "Table Grid"
-    for label, value in (
-        ("Image references checked", image_audit.get("image_ref_count", 0) if image_audit else 0),
-        ("Suspect references", image_audit.get("suspect_count", 0) if image_audit else 0),
-        ("Issue counts", image_audit_issue_text(image_audit)),
-    ):
-        row = qa.add_row().cells
-        row[0].text = str(label)
-        row[1].text = str(value)
-
-    document.add_heading("Summary Excerpt", level=1)
-    document.add_paragraph("The Markdown file remains the canonical full summary. This DOCX keeps a compact reading index plus image QA to avoid lossy document conversion.")
-    for kind, value in summary_excerpt_lines(summary_text):
-        if kind == "h1":
-            document.add_heading(value, level=1)
-        elif kind in {"h2", "h3"}:
-            document.add_heading(value, level=2 if kind == "h2" else 3)
-        elif kind == "bullet":
-            document.add_paragraph(value, style="List Bullet")
-        elif kind == "number":
-            document.add_paragraph(value, style="List Number")
-        else:
-            document.add_paragraph(value)
-
-    if images:
-        document.add_heading("Key Figures And Formula Snapshots", level=1)
-        for image_path in images[:8]:
-            entry = image_audit_entry_for_path(image_audit, image_path)
-            dimensions = entry.get("dimensions") if entry else image_dimensions_for_file(image_path)
-            issues = ", ".join(entry.get("issues", [])) if entry else ""
-            caption = image_path.name
-            if dimensions:
-                caption += f" ({dimensions[0]} x {dimensions[1]})"
-            if issues:
-                caption += f" - check: {issues}"
-            document.add_paragraph(caption)
-            try:
-                document.add_picture(str(image_path), width=Inches(5.8))
-            except Exception as exc:
-                document.add_paragraph(f"[image skipped: {image_path.name}: {exc}]")
-
-    ensure_dir(output_path.parent)
-    document.save(str(output_path))
-
-
-def write_deep_pdf(
-    record: dict[str, Any],
-    summary_text: str,
-    images: list[Path],
-    output_path: Path,
-    *,
-    image_audit: dict[str, Any] | None = None,
-    summary_md: Path | None = None,
-    package_dir: Path | None = None,
-) -> None:
-    try:
-        import fitz
-    except Exception as exc:
-        raise SyncError("PyMuPDF is required for deep PDF package generation.") from exc
-
-    doc = fitz.open()
-    width, height = fitz.paper_size("a4")
-    margin = 50
-    font = "china-s"
-
-    def new_page() -> tuple[fitz.Page, float]:
-        page = doc.new_page(width=width, height=height)
-        return page, margin
-
-    def split_display_line(text: str, limit: int = 92) -> list[str]:
-        text = str(text)
-        if len(text) <= limit:
-            return [text]
-        return [text[index : index + limit] for index in range(0, len(text), limit)]
-
-    def add_text(page: Any, y: float, text: str, *, fontsize: int = 10, bold: bool = False) -> tuple[Any, float]:
-        nonlocal doc
-        line_height = fontsize + 6
-        for line in split_display_line(text, 72 if fontsize >= 13 else 92):
-            if y + line_height > height - margin:
-                page, y = new_page()
-            page.insert_text((margin, y), line, fontsize=fontsize, fontname=font)
-            y += line_height + (2 if bold else 0)
-        return page, y
-
-    page, y = new_page()
-    title = str(record.get("title") or record.get("summary_stem") or "Deep Reading Package")
-    page, y = add_text(page, y, title, fontsize=18, bold=True)
-    y += 12
-    metadata_lines = [
-        f"Year: {record.get('year', '')}",
-        f"Source: {record.get('source', '')}",
-        f"Authors: {record_authors_text(record)}",
-        f"Original PDF: {record.get('pdf_path', '')}",
-        f"Markdown summary: {str(summary_md.resolve()) if summary_md else record.get('summary_md', '')}",
-        f"Summary package: {str(package_dir.resolve()) if package_dir else record.get('package_dir', '')}",
-    ]
-    for line in metadata_lines:
-        if line.endswith(": "):
-            continue
-        page, y = add_text(page, y, line, fontsize=9)
-
-    y += 8
-    page, y = add_text(page, y, "Image Reference QA", fontsize=14, bold=True)
-    page, y = add_text(page, y, f"Image references checked: {image_audit.get('image_ref_count', 0) if image_audit else 0}", fontsize=10)
-    page, y = add_text(page, y, f"Suspect references: {image_audit.get('suspect_count', 0) if image_audit else 0}", fontsize=10)
-    page, y = add_text(page, y, f"Issue counts: {image_audit_issue_text(image_audit)}", fontsize=10)
-
-    y += 8
-    page, y = add_text(page, y, "Summary Excerpt", fontsize=14, bold=True)
-    page, y = add_text(page, y, "The Markdown file remains the canonical full summary. This PDF is a compact reading index and QA report.", fontsize=10)
-    for kind, value in summary_excerpt_lines(summary_text, limit=55):
-        font_size = 12 if kind in {"h1", "h2"} else 9
-        prefix = "- " if kind in {"bullet", "number"} else ""
-        page, y = add_text(page, y, f"{prefix}{value}", fontsize=font_size, bold=kind in {"h1", "h2"})
-        y += 2
-
-    for image_path in images[:4]:
-        if y + 220 > height - margin:
-            page, y = new_page()
-        page, y = add_text(page, y, image_path.name, fontsize=9)
-        try:
-            pix = fitz.Pixmap(str(image_path))
-            img_w = width - 2 * margin
-            img_h = img_w * pix.height / max(pix.width, 1)
-            max_h = min(360, height - margin - y)
-            if img_h > max_h:
-                img_h = max_h
-                img_w = img_h * pix.width / max(pix.height, 1)
-            page.insert_image(fitz.Rect(margin, y, margin + img_w, y + img_h), filename=str(image_path))
-            y += img_h + 14
-        except Exception as exc:
-            page, y = add_text(page, y, f"[image skipped: {exc}]", fontsize=9)
-            y += 6
-
-    ensure_dir(output_path.parent)
-    doc.save(str(output_path))
-    doc.close()
-
-
-def generate_deep_reading_package(config: Config, record: dict[str, Any]) -> dict[str, Any]:
-    summary_md = resolve_existing_path(record.get("summary_md"), kind="file")
+def summary_quality_report_dir(record: dict[str, Any]) -> Path:
     package_dir = resolve_existing_path(record.get("package_dir"), kind="dir")
+    if package_dir is not None:
+        return package_dir / "quality_checks"
+    summary_md = resolve_existing_path(record.get("summary_md"), kind="file")
+    if summary_md is not None:
+        return summary_md.parent / "quality_checks"
+    return Path(first_nonempty(record.get("summary_stem"), "summary")) / "quality_checks"
+
+
+def write_summary_image_quality_report(
+    record: dict[str, Any],
+    *,
+    ai_report: str | None = None,
+) -> dict[str, Any]:
+    summary_md = resolve_existing_path(record.get("summary_md"), kind="file")
     if summary_md is None:
-        raise SyncError("Existing summary markdown is required before generating a deep package.")
-    if package_dir is None:
-        package_dir = summary_md.parent
+        raise SyncError(f"No existing summary markdown found for {record.get('summary_stem') or record.get('pdf_path')}.")
     summary_text = read_text(summary_md)
-    output_dir = deep_package_dir_for_record(record)
+    image_audit = build_image_reference_audit(record, summary_text)
+    report = render_image_audit_report(image_audit, ai_report)
+    output_dir = summary_quality_report_dir(record)
     ensure_dir(output_dir)
-    stem = sanitize_windows_filename(record.get("summary_stem") or summary_md.stem, summary_md.stem, max_length=96)
-    images = collect_deep_package_images(summary_text, package_dir)
-    docx_path = output_dir / f"{stem}-deep-reading.docx"
-    pdf_path = output_dir / f"{stem}-deep-reading.pdf"
-    manifest_path = output_dir / "deep_reading_manifest.json"
-    log(f"[deep-package] {summary_md.name}")
-    audit_record = dict(record)
-    audit_record["summary_md"] = str(summary_md)
-    audit_record["package_dir"] = str(package_dir)
-    image_audit = build_image_reference_audit(audit_record, summary_text)
-    write_deep_docx(
-        record,
-        summary_text,
-        images,
-        docx_path,
-        image_audit=image_audit,
-        summary_md=summary_md,
-        package_dir=package_dir,
-    )
-    write_deep_pdf(
-        record,
-        summary_text,
-        images,
-        pdf_path,
-        image_audit=image_audit,
-        summary_md=summary_md,
-        package_dir=package_dir,
-    )
-    manifest = {
-        "summary_md": str(summary_md.resolve()),
-        "package_dir": str(package_dir.resolve()),
-        "docx": str(docx_path.resolve()),
-        "pdf": str(pdf_path.resolve()),
-        "images": [str(path) for path in images],
-        "image_qa": {
-            "image_ref_count": image_audit.get("image_ref_count", 0),
-            "suspect_count": image_audit.get("suspect_count", 0),
-            "issue_counts": image_audit.get("issue_counts", {}),
-        },
-        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path = output_dir / f"{summary_md.stem}-image-quality-check.md"
+    report_path.write_text(report, encoding="utf-8")
     updated = dict(record)
-    updated["deep_package_dir"] = str(output_dir.resolve())
-    updated["deep_package_docx"] = str(docx_path.resolve())
-    updated["deep_package_pdf"] = str(pdf_path.resolve())
-    updated["deep_package_manifest"] = str(manifest_path.resolve())
-    updated["deep_package_generated_at"] = manifest["generated_at"]
+    updated["summary_quality_check"] = str(report_path.resolve())
+    updated["summary_quality_checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    updated["summary_quality_check_focus"] = "image-references-and-crops"
+    updated["summary_quality_suspect_count"] = int(image_audit.get("suspect_count", 0) or 0)
+    log(f"[check] report: {report_path}")
     return updated
 
 
@@ -3936,6 +3601,10 @@ def process_pdf(
         **metadata,
     }
     record["obsidian_stem"] = derive_obsidian_item_stem(record)
+    try:
+        record = write_summary_image_quality_report(record)
+    except Exception as exc:
+        log(f"[check] image QA report skipped for {summary_md.name}: {exc}")
 
     obsidian_needs_copy = (
         force_regenerate
@@ -4042,43 +3711,6 @@ def _state_and_items(config: Config) -> tuple[dict[str, Any], dict[str, Any]]:
     return state, items_state
 
 
-def run_deep_package(config: Config, explicit_pdfs: list[Path] | None = None) -> int:
-    if not explicit_pdfs:
-        raise SyncError("The deep-package command requires at least one --pdf path.")
-    state, items_state = _state_and_items(config)
-    updated_records: list[dict[str, Any]] = []
-    for pdf_path in discover_pdfs(config, explicit_pdfs):
-        key = str(pdf_path.resolve())
-        previous = items_state.get(key) if isinstance(items_state.get(key), dict) else None
-        if previous is None:
-            raise SyncError(f"No existing summary state found for {pdf_path.name}. Generate a summary first.")
-        package_missing = resolve_existing_path(previous.get("package_dir"), kind="dir") is None
-        summary_md = resolve_existing_path(previous.get("summary_md"), kind="file")
-        if summary_md is None:
-            raise SyncError(f"No existing summary markdown found for {pdf_path.name}.")
-        if package_missing:
-            package_dir = package_summary(config, summary_md, pdf_path, clean=True)
-            previous["package_dir"] = str(package_dir.resolve())
-        record = generate_deep_reading_package(config, previous)
-        record = sync_obsidian_package(config, record, copy_package=True)
-        items_state[key] = record
-        updated_records.append(record)
-        sync_zotero_record(config, record)
-
-    all_records = [record for record in items_state.values() if isinstance(record, dict)]
-    rebuild_obsidian_indexes(config, all_records)
-    save_json(
-        config.state_path,
-        {
-            **state,
-            "items": items_state,
-            "last_deep_package_run": time.strftime("%Y-%m-%d %H:%M:%S"),
-        },
-    )
-    log(f"[done] Deep reading package generated for {len(updated_records)} item(s).")
-    return 0
-
-
 def build_summary_quality_prompt(config: Config, record: dict[str, Any], image_audit: dict[str, Any]) -> list[dict[str, Any]]:
     system_prompt = (
         "You are a strict but low-cost QA reviewer for a paper-reading workflow. "
@@ -4106,8 +3738,6 @@ def build_summary_quality_prompt(config: Config, record: dict[str, Any], image_a
 def run_check_summary(config: Config, explicit_pdfs: list[Path] | None = None) -> int:
     if not explicit_pdfs:
         raise SyncError("The check-summary command requires at least one --pdf path.")
-    if not config.openai_enabled and not codex_cli_available(config):
-        raise SyncError("No enabled model backend is available for summary QA.")
     state, items_state = _state_and_items(config)
     checked = 0
     for pdf_path in discover_pdfs(config, explicit_pdfs):
@@ -4122,19 +3752,20 @@ def run_check_summary(config: Config, explicit_pdfs: list[Path] | None = None) -
         log(f"[check] image refs in {summary_md.name}")
         image_audit = build_image_reference_audit(record, summary_text)
         ai_report = None
-        if image_audit.get("suspect_count"):
+        if image_audit.get("suspect_count") and (config.openai_enabled or codex_cli_available(config)):
             log(f"[check] AI image QA for {summary_md.name}: {image_audit.get('suspect_count')} suspect ref(s)")
-            ai_report = call_model(config, build_summary_quality_prompt(config, record, image_audit))
+            try:
+                ai_report = call_model(config, build_summary_quality_prompt(config, record, image_audit))
+            except Exception as exc:
+                ai_report = f"AI 复核未完成：{exc}\n\n已保留本地图片引用检查结果，请优先核查下方可疑项。"
+                log(f"[check] AI image QA skipped after model error: {exc}")
+        elif image_audit.get("suspect_count"):
+            log(f"[check] local image QA found {image_audit.get('suspect_count')} suspect ref(s); no model backend available")
         else:
             log(f"[check] local image QA passed for {summary_md.name}; skip AI call")
-        report = render_image_audit_report(image_audit, ai_report)
-        output_dir = deep_package_dir_for_record(record)
-        ensure_dir(output_dir)
-        report_path = output_dir / f"{summary_md.stem}-image-quality-check.md"
-        report_path.write_text(report, encoding="utf-8")
-        record["summary_quality_check"] = str(report_path.resolve())
-        record["summary_quality_checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        record["summary_quality_check_focus"] = "image-references-and-crops"
+        record = write_summary_image_quality_report(record, ai_report=ai_report)
+        record = sync_obsidian_package(config, record, copy_package=True)
+        sync_zotero_record(config, record)
         items_state[key] = record
         checked += 1
 
@@ -4220,8 +3851,6 @@ def main() -> int:
         return watch(config, args.interval)
     if args.command == "compare":
         return run_compare(config, args.pdf)
-    if args.command == "deep-package":
-        return run_deep_package(config, args.pdf)
     if args.command == "check-summary":
         return run_check_summary(config, args.pdf)
     return run_once(config, args.pdf, force_regenerate=bool(args.force_regenerate))

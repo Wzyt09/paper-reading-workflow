@@ -1,25 +1,16 @@
 # paper-reading-workflow
 
-## 修复记录（2026-04-26）
-
-- 修复生成精读 DOCX/PDF 包时，Zotero 深度包 linked-file 附件误匹配并覆盖原 `AI Summary (Codex)` Markdown 总结附件的问题。现在 Markdown 总结、精读 DOCX、精读 PDF 会作为独立附件共存。
-- 调整精读 DOCX/PDF 输出策略：DOCX/PDF 不再尝试粗暴转换完整 Markdown，而是生成更稳定的精读索引、原始文件链接、图片引用 QA 摘要和关键图表预览；完整内容仍以 Markdown 总结为准。
-
 ## 最新更新（2026-04-26）
 
-本次发布新增并改进了以下工作流能力：
-
-- **精读 DOCX/PDF 包**：对已经生成 Markdown 总结的条目，可一键生成 `deep_reading_package/`，其中包含精读版 `.docx`、`.pdf` 和 `deep_reading_manifest.json`。
-- **GUI 操作入口**：在 collection 页面新增 `Deep DOCX/PDF Package` 按钮；点击 `Generate / Attach Summary` 时，如果条目已有总结，会弹出三个选项：重新生成总结、生成精读 DOCX/PDF 包、AI 检查规范性。
-- **总结完成后联动**：新总结生成完成后，GUI 会询问是否立即生成精读 DOCX/PDF 包。
-- **Zotero 链接回写**：启用 `zotero_api` 且配置 `ZOTERO_API_KEY` 后，精读包中的 DOCX/PDF 会作为 Zotero linked-file 附件写回原条目，同时摘要 note 中包含精读包链接。
-- **PDF 图表裁剪改进**：图表抽取不再只依赖图注上方固定裁剪，改为基于 PyMuPDF 的同栏图像/矢量对象候选框合并策略，减少截到正文、漏截边界和图像不完整的问题。
-- **图片裁剪与引用检查**：新增 `check-summary` 子命令，优先用本地规则检查 Markdown 图片引用、缺失图片、疑似整页截图、过小碎片图和极端比例裁剪；只有发现可疑项时才调用 AI 做轻量复核，减少模型资源消耗。
+- **移除精读 DOCX/PDF 包功能**：GUI 按钮、总结完成后的弹窗、`deep-package` CLI 命令、DOCX/PDF 生成和 Zotero 精读包附件回写均已删除。后续以 Markdown 总结作为唯一主文档格式。
+- **图片检查报告固定位置**：`check-summary` 会把报告写入每个总结包的 `quality_checks/` 目录，文件名为 `<summary-stem>-image-quality-check.md`，并把链接写入 Obsidian 副本和 Zotero summary note。
+- **新总结自动图片 QA**：生成或同步总结后，会自动生成本地图片引用检查报告；如果 AI 复核不可用或启动失败，仍会保留本地报告，不再因为模型失败导致报告缺失。
+- **图片引用更保守**：总结提示词明确禁止猜测图片路径或把整页截图当作图表引用；只有提取 Markdown 中明确出现且能对应图注/公式的路径才允许写入总结。
+- **PDF 图表裁剪改进**：图表抽取基于 PyMuPDF 的同栏图像/矢量对象候选框合并策略，减少截到正文、漏截边界和图像不完整的问题。
 
 相关命令：
 
 ```powershell
-.\03-tools\pdf_tools\.venv\Scripts\python.exe .\05-zotero_obsidian_sync\sync_pipeline.py deep-package --pdf "D:/papers/example.pdf"
 .\03-tools\pdf_tools\.venv\Scripts\python.exe .\05-zotero_obsidian_sync\sync_pipeline.py check-summary --pdf "D:/papers/example.pdf"
 ```
 
