@@ -381,56 +381,137 @@ def search_caption_rect(doc: fitz.Document, figure_label: str) -> tuple[int, fit
     return None
 
 
-def figure_crop_rect(page: fitz.Page, caption_rect: fitz.Rect) -> fitz.Rect | None:
-    page_rect = page.rect
-    column_threshold = page_rect.width / 2
-    if caption_rect.x1 <= column_threshold + 24:
-        x_limits = (0.0, column_threshold + 12)
-    elif caption_rect.x0 >= column_threshold - 24:
-        x_limits = (column_threshold - 12, page_rect.width)
-    else:
-        x_limits = (0.0, page_rect.width)
+def rect_area(rect: fitz.Rect) -> float:
+    return max(float(rect.width), 0.0) * max(float(rect.height), 0.0)
 
-    candidates: list[fitz.Rect] = []
+
+def rect_union(rects: list[fitz.Rect]) -> fitz.Rect | None:
+    if not rects:
+        return None
+    union = fitz.Rect(rects[0])
+    for rect in rects[1:]:
+        union |= rect
+    return union
+
+
+def caption_column_limits(page_rect: fitz.Rect, caption_rect: fitz.Rect) -> tuple[float, float]:
+    column_threshold = page_rect.width / 2
+    gutter = 18.0
+    if caption_rect.x1 <= column_threshold + 30:
+        return 0.0, column_threshold + gutter
+    if caption_rect.x0 >= column_threshold - 30:
+        return column_threshold - gutter, page_rect.width
+    return 0.0, page_rect.width
+
+
+def same_column(rect: fitz.Rect, x_limits: tuple[float, float]) -> bool:
+    overlap = min(rect.x1, x_limits[1]) - max(rect.x0, x_limits[0])
+    return overlap >= min(rect.width * 0.45, 24.0)
+
+
+def text_block_rects(page: fitz.Page) -> list[fitz.Rect]:
+    rects: list[fitz.Rect] = []
+    for block in page.get_text("blocks", sort=True):
+        if len(block) < 5:
+            continue
+        text = str(block[4] or "").strip()
+        if not text:
+            continue
+        rect = fitz.Rect(block[:4])
+        if rect.width > 3 and rect.height > 3:
+            rects.append(rect)
+    return rects
+
+
+def visual_object_rects_above_caption(
+    page: fitz.Page,
+    caption_rect: fitz.Rect,
+    x_limits: tuple[float, float],
+) -> list[fitz.Rect]:
+    page_rect = page.rect
+    rects: list[fitz.Rect] = []
+    max_area = rect_area(page_rect) * 0.55
     for image in page.get_images(full=True):
         for rect in page.get_image_rects(image[0]):
-            if rect.y1 > caption_rect.y0 + 12:
+            if rect.y1 > caption_rect.y0 + 10 or not same_column(rect, x_limits):
                 continue
-            if rect.x1 < x_limits[0] or rect.x0 > x_limits[1]:
+            if rect.width < 10 or rect.height < 10:
                 continue
-            if rect.width < 8 or rect.height < 8:
-                continue
-            candidates.append(rect)
+            rects.append(rect)
 
     for drawing in page.get_drawings():
-        rect = drawing["rect"]
-        area = rect.width * rect.height
-        if area < 800 or area > page_rect.width * page_rect.height * 0.45:
+        rect = fitz.Rect(drawing["rect"])
+        area = rect_area(rect)
+        if area < 25 or area > max_area:
             continue
-        if rect.y1 > caption_rect.y0 + 12:
+        if rect.y1 > caption_rect.y0 + 10 or not same_column(rect, x_limits):
             continue
-        if rect.x1 < x_limits[0] or rect.x0 > x_limits[1]:
-            continue
-        candidates.append(rect)
+        rects.append(rect)
+    return rects
 
-    include_caption = False
-    if candidates:
-        x0 = min(rect.x0 for rect in candidates)
-        y0 = min(rect.y0 for rect in candidates)
-        x1 = max(rect.x1 for rect in candidates)
-        y1 = max(rect.y1 for rect in candidates)
-        if 0 <= caption_rect.y0 - y1 <= 48:
-            include_caption = True
-            y1 = max(y1, caption_rect.y1 + 8)
-        rect = fitz.Rect(x0 - 12, y0 - 12, x1 + 12, y1 + 12)
-        rect = rect & page_rect
-        return rect if rect.width > 16 and rect.height > 16 else None
 
-    top = max(0.0, caption_rect.y0 - min(420, page_rect.height * 0.45))
-    bottom = caption_rect.y1 + 8 if include_caption else max(top + 40, caption_rect.y0 - 8)
-    rect = fitz.Rect(x_limits[0], top, x_limits[1], bottom)
-    rect = rect & page_rect
-    return rect if rect.width > 16 and rect.height > 16 else None
+def expand_figure_rect_with_nearby_labels(
+    page: fitz.Page,
+    base_rect: fitz.Rect,
+    caption_rect: fitz.Rect,
+    x_limits: tuple[float, float],
+) -> fitz.Rect:
+    page_rect = page.rect
+    figure_rect = fitz.Rect(base_rect)
+    expanded = (figure_rect + (-22, -26, 22, 18)) & page_rect
+    for block_rect in text_block_rects(page):
+        if block_rect.y0 >= caption_rect.y0 - 2:
+            continue
+        if not same_column(block_rect, x_limits):
+            continue
+        if block_rect.intersects(expanded):
+            figure_rect |= block_rect
+            continue
+        vertical_gap = min(abs(block_rect.y1 - figure_rect.y0), abs(block_rect.y0 - figure_rect.y1))
+        horizontal_overlap = min(block_rect.x1, figure_rect.x1) - max(block_rect.x0, figure_rect.x0)
+        if vertical_gap <= 18 and horizontal_overlap >= min(block_rect.width, figure_rect.width) * 0.25:
+            figure_rect |= block_rect
+    return figure_rect
+
+
+def fallback_rect_from_caption_gaps(
+    page: fitz.Page,
+    caption_rect: fitz.Rect,
+    x_limits: tuple[float, float],
+) -> fitz.Rect | None:
+    page_rect = page.rect
+    blocks = [
+        rect
+        for rect in text_block_rects(page)
+        if rect.y1 <= caption_rect.y0 - 8 and same_column(rect, x_limits)
+    ]
+    blocks.sort(key=lambda rect: rect.y1, reverse=True)
+    top = max(0.0, caption_rect.y0 - min(460.0, page_rect.height * 0.52))
+    for rect in blocks:
+        gap = caption_rect.y0 - rect.y1
+        if 28 <= gap <= 150:
+            top = max(top, rect.y1 + 6)
+            break
+    candidate = fitz.Rect(x_limits[0], top, x_limits[1], caption_rect.y1 + 8) & page_rect
+    return candidate if candidate.width > 24 and candidate.height > 48 else None
+
+
+def figure_crop_rect(page: fitz.Page, caption_rect: fitz.Rect) -> fitz.Rect | None:
+    page_rect = page.rect
+    x_limits = caption_column_limits(page_rect, caption_rect)
+    visual_rects = visual_object_rects_above_caption(page, caption_rect, x_limits)
+    base = rect_union(visual_rects)
+    if base is not None:
+        figure_rect = expand_figure_rect_with_nearby_labels(page, base, caption_rect, x_limits)
+        if 0 <= caption_rect.y0 - figure_rect.y1 <= 56:
+            figure_rect.y1 = max(figure_rect.y1, caption_rect.y1 + 8)
+        figure_rect = (figure_rect + (-14, -14, 14, 14)) & page_rect
+        figure_rect.x0 = max(figure_rect.x0, x_limits[0])
+        figure_rect.x1 = min(figure_rect.x1, x_limits[1])
+        if figure_rect.width > 24 and figure_rect.height > 32:
+            return figure_rect
+
+    return fallback_rect_from_caption_gaps(page, caption_rect, x_limits)
 
 
 def crop_figure_from_document(doc: fitz.Document, figure_label: str, assets_dir: Path) -> str | None:

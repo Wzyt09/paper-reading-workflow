@@ -29,6 +29,8 @@ DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
 YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 SUMMARY_NOTE_MARKER = "codex-zotero-summary-note"
 SUMMARY_ATTACHMENT_TITLE_PREFIX = "AI Summary (Codex)"
+DEEP_PACKAGE_NOTE_MARKER = "codex-zotero-deep-reading-package"
+DEEP_PACKAGE_ATTACHMENT_TITLE_PREFIX = "Deep Reading Package (Codex)"
 EXTRACTOR_MIN_VERSION = 3
 
 
@@ -110,8 +112,8 @@ def parse_args() -> argparse.Namespace:
         "command",
         nargs="?",
         default="once",
-        choices=("once", "compare", "watch", "setup-bbt"),
-        help="Run once, compare selected PDFs, watch continuously, or register Better BibTeX auto-export.",
+        choices=("once", "compare", "deep-package", "check-summary", "watch", "setup-bbt"),
+        help="Run once, compare selected PDFs, generate deep packages, QA summaries, watch, or setup Better BibTeX.",
     )
     parser.add_argument(
         "--config",
@@ -148,6 +150,11 @@ def parse_args() -> argparse.Namespace:
         "--summary-user-request",
         default="",
         help="Extra user requirements and key questions to combine with the default summary spec.",
+    )
+    parser.add_argument(
+        "--force-regenerate",
+        action="store_true",
+        help="Regenerate summaries even when an existing Markdown summary is available.",
     )
     return parser.parse_args()
 
@@ -2660,6 +2667,24 @@ def build_summary_note_html(record: dict[str, Any]) -> str:
         parts.append(
             f"<li>Obsidian 副本：<a href=\"{html.escape(path_to_uri(obsidian_md))}\">{html.escape(obsidian_md.name)}</a></li>"
         )
+    deep_docx = Path(record["deep_package_docx"]) if record.get("deep_package_docx") else None
+    deep_pdf = Path(record["deep_package_pdf"]) if record.get("deep_package_pdf") else None
+    deep_dir = Path(record["deep_package_dir"]) if record.get("deep_package_dir") else None
+    if (deep_docx and deep_docx.exists()) or (deep_pdf and deep_pdf.exists()) or (deep_dir and deep_dir.exists()):
+        parts.append(f"<li><strong>精读 DOCX/PDF 包</strong> <span data-codex-marker=\"{DEEP_PACKAGE_NOTE_MARKER}\"></span><ul>")
+        if deep_docx and deep_docx.exists():
+            parts.append(
+                f"<li>DOCX：<a href=\"{html.escape(path_to_uri(deep_docx))}\">{html.escape(deep_docx.name)}</a></li>"
+            )
+        if deep_pdf and deep_pdf.exists():
+            parts.append(
+                f"<li>PDF：<a href=\"{html.escape(path_to_uri(deep_pdf))}\">{html.escape(deep_pdf.name)}</a></li>"
+            )
+        if deep_dir and deep_dir.exists():
+            parts.append(
+                f"<li>目录：<a href=\"{html.escape(path_to_uri(deep_dir))}\">{html.escape(str(deep_dir))}</a></li>"
+            )
+        parts.append("</ul></li>")
     parts.append(f"<li>更新时间：{html.escape(record.get('generated_at', ''))}</li>")
     parts.append("</ul>")
     return "".join(parts)
@@ -2905,6 +2930,71 @@ def ensure_zotero_summary_attachment(config: Config, parent_item_key: str, recor
     raise SyncError(f"Unsupported zotero_api.summary_attachment_mode: {mode}")
 
 
+def ensure_zotero_linked_file_attachment(
+    config: Config,
+    parent_item_key: str,
+    file_path: Path,
+    *,
+    title_prefix: str,
+    content_type: str,
+) -> None:
+    if not file_path.exists():
+        return
+    children = zotero_get_children(config, parent_item_key)
+    existing = find_existing_summary_attachment(children, file_path.name)
+    title = f"{title_prefix}: {file_path.name}"
+    if existing is not None:
+        current = zotero_get_item(config, existing["key"])
+        data = current["data"]
+        existing_mode = first_nonempty(data.get("linkMode")).lower()
+        if existing_mode and existing_mode != "linked_file":
+            zotero_delete_item(config, existing["key"], current.get("version"))
+            existing = None
+        else:
+            data["title"] = title
+            data["contentType"] = content_type
+            data["path"] = str(file_path.resolve())
+            zotero_put_item(config, existing["key"], data)
+            return
+    zotero_create_items(
+        config,
+        [
+            {
+                "itemType": "attachment",
+                "parentItem": parent_item_key,
+                "linkMode": "linked_file",
+                "title": title,
+                "note": "",
+                "tags": [],
+                "relations": {},
+                "contentType": content_type,
+                "path": str(file_path.resolve()),
+            }
+        ],
+    )
+
+
+def ensure_zotero_deep_package_links(config: Config, parent_item_key: str, record: dict[str, Any]) -> None:
+    docx = Path(record["deep_package_docx"]) if record.get("deep_package_docx") else None
+    pdf = Path(record["deep_package_pdf"]) if record.get("deep_package_pdf") else None
+    if docx and docx.exists():
+        ensure_zotero_linked_file_attachment(
+            config,
+            parent_item_key,
+            docx,
+            title_prefix=DEEP_PACKAGE_ATTACHMENT_TITLE_PREFIX,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    if pdf and pdf.exists():
+        ensure_zotero_linked_file_attachment(
+            config,
+            parent_item_key,
+            pdf,
+            title_prefix=DEEP_PACKAGE_ATTACHMENT_TITLE_PREFIX,
+            content_type="application/pdf",
+        )
+
+
 def sync_zotero_item_tags(config: Config, item_key: str, ai_tags: list[str]) -> None:
     """Merge *ai_tags* into the Zotero item's existing tags.
 
@@ -2942,6 +3032,11 @@ def sync_zotero_record(config: Config, record: dict[str, Any]) -> None:
             ensure_zotero_summary_attachment(config, item_key, record)
         except Exception as exc:
             log(f"[zotero] Summary attachment sync skipped for {record.get('summary_stem')}: {exc}")
+    if record.get("deep_package_docx") or record.get("deep_package_pdf"):
+        try:
+            ensure_zotero_deep_package_links(config, item_key, record)
+        except Exception as exc:
+            log(f"[zotero] Deep package link sync skipped for {record.get('summary_stem')}: {exc}")
     # Sync AI-generated tags from summary MD → Zotero item
     ai_tags = record.get("ai_tags", [])
     if ai_tags:
@@ -2949,6 +3044,241 @@ def sync_zotero_record(config: Config, record: dict[str, Any]) -> None:
             sync_zotero_item_tags(config, item_key, ai_tags)
         except Exception as exc:
             log(f"[zotero] AI tag sync skipped for {record.get('summary_stem')}: {exc}")
+
+
+def markdown_image_refs(text: str) -> list[str]:
+    return [match.group(1).strip() for match in re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", text)]
+
+
+def markdown_plain_lines(text: str) -> list[tuple[str, str]]:
+    lines: list[tuple[str, str]] = []
+    in_code = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code or not stripped or stripped.startswith("![](") or stripped.startswith("!["):
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if heading:
+            lines.append((f"h{len(heading.group(1))}", heading.group(2).strip()))
+            continue
+        cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", stripped)
+        cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+        cleaned = cleaned.strip()
+        if cleaned:
+            lines.append(("p", cleaned))
+    return lines
+
+
+def resolve_package_image(package_dir: Path, ref: str) -> Path | None:
+    ref = urllib.parse.unquote(ref.strip())
+    if ref.startswith(("http://", "https://", "file://")):
+        return None
+    candidate = (package_dir / ref).resolve()
+    try:
+        candidate.relative_to(package_dir.resolve())
+    except ValueError:
+        return None
+    if candidate.is_file() and candidate.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+        return candidate
+    return None
+
+
+def collect_deep_package_images(summary_text: str, package_dir: Path, limit: int = 12) -> list[Path]:
+    images: list[Path] = []
+    seen: set[str] = set()
+    for ref in markdown_image_refs(summary_text):
+        image_path = resolve_package_image(package_dir, ref)
+        if image_path is None:
+            continue
+        key = str(image_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        images.append(image_path)
+        if len(images) >= limit:
+            break
+    images_dir = package_dir / "images"
+    if images_dir.is_dir() and len(images) < limit:
+        for image_path in sorted(images_dir.glob("*.png")):
+            key = str(image_path.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            images.append(image_path.resolve())
+            if len(images) >= limit:
+                break
+    return images
+
+
+def deep_package_dir_for_record(record: dict[str, Any]) -> Path:
+    package_dir = Path(first_nonempty(record.get("package_dir")))
+    if package_dir:
+        return package_dir / "deep_reading_package"
+    summary_md = Path(first_nonempty(record.get("summary_md"), "summary.md"))
+    return summary_md.parent / f"{summary_md.stem}_deep_reading_package"
+
+
+def write_deep_docx(record: dict[str, Any], summary_text: str, images: list[Path], output_path: Path) -> None:
+    try:
+        from docx import Document
+        from docx.shared import Inches, Pt
+    except Exception as exc:
+        raise SyncError(
+            "python-docx is required for deep DOCX package generation. "
+            "Run setup_windows.ps1 or install requirements.txt in the pdf_tools venv."
+        ) from exc
+
+    document = Document()
+    styles = document.styles
+    styles["Normal"].font.name = "Microsoft YaHei"
+    styles["Normal"].font.size = Pt(10.5)
+    title = record.get("title") or record.get("summary_stem") or "Deep Reading Package"
+    document.add_heading(str(title), level=0)
+    meta = document.add_paragraph()
+    meta.add_run("Deep reading package generated by local Paper Reading Workflow.").italic = True
+    info = document.add_table(rows=0, cols=2)
+    info.style = "Table Grid"
+    for label, value in (
+        ("Year", record.get("year", "")),
+        ("Source", record.get("source", "")),
+        ("Authors", ", ".join(record.get("authors", []) if isinstance(record.get("authors"), list) else [])),
+        ("DOI", record.get("doi", "")),
+        ("arXiv", record.get("arxiv", "")),
+        ("PDF", record.get("pdf_path", "")),
+    ):
+        if not value:
+            continue
+        row = info.add_row().cells
+        row[0].text = label
+        row[1].text = str(value)
+
+    document.add_heading("Reading Notes", level=1)
+    for kind, value in markdown_plain_lines(summary_text):
+        if kind == "h1":
+            document.add_heading(value, level=1)
+        elif kind in {"h2", "h3"}:
+            document.add_heading(value, level=2 if kind == "h2" else 3)
+        elif value.startswith(("- ", "* ")):
+            document.add_paragraph(value[2:].strip(), style="List Bullet")
+        elif re.match(r"^\d+\.\s+", value):
+            document.add_paragraph(re.sub(r"^\d+\.\s+", "", value), style="List Number")
+        else:
+            document.add_paragraph(value)
+
+    if images:
+        document.add_heading("Key Figures And Formula Snapshots", level=1)
+        for image_path in images:
+            document.add_paragraph(image_path.name)
+            try:
+                document.add_picture(str(image_path), width=Inches(5.8))
+            except Exception as exc:
+                document.add_paragraph(f"[image skipped: {image_path.name}: {exc}]")
+
+    ensure_dir(output_path.parent)
+    document.save(str(output_path))
+
+
+def write_deep_pdf(record: dict[str, Any], summary_text: str, images: list[Path], output_path: Path) -> None:
+    try:
+        import fitz
+    except Exception as exc:
+        raise SyncError("PyMuPDF is required for deep PDF package generation.") from exc
+
+    doc = fitz.open()
+    width, height = fitz.paper_size("a4")
+    margin = 50
+    font = "china-s"
+
+    def new_page() -> tuple[fitz.Page, float]:
+        page = doc.new_page(width=width, height=height)
+        return page, margin
+
+    page, y = new_page()
+    title = str(record.get("title") or record.get("summary_stem") or "Deep Reading Package")
+    y += page.insert_textbox(fitz.Rect(margin, y, width - margin, y + 64), title, fontsize=18, fontname=font)
+    y += 16
+    metadata_lines = [
+        f"Year: {record.get('year', '')}",
+        f"Source: {record.get('source', '')}",
+        f"Authors: {', '.join(record.get('authors', []) if isinstance(record.get('authors'), list) else [])}",
+        f"PDF: {record.get('pdf_path', '')}",
+    ]
+    for line in metadata_lines:
+        if line.endswith(": "):
+            continue
+        y += page.insert_textbox(fitz.Rect(margin, y, width - margin, y + 38), line, fontsize=9, fontname=font)
+        y += 4
+
+    for kind, value in markdown_plain_lines(summary_text):
+        font_size = 13 if kind in {"h1", "h2"} else 10
+        box_height = 54 if kind in {"h1", "h2"} else 42
+        if y + box_height > height - margin:
+            page, y = new_page()
+        text = value[:1400]
+        y += page.insert_textbox(fitz.Rect(margin, y, width - margin, y + box_height), text, fontsize=font_size, fontname=font)
+        y += 6
+
+    for image_path in images:
+        if y + 230 > height - margin:
+            page, y = new_page()
+        y += page.insert_textbox(fitz.Rect(margin, y, width - margin, y + 22), image_path.name, fontsize=9, fontname=font)
+        y += 4
+        try:
+            pix = fitz.Pixmap(str(image_path))
+            img_w = width - 2 * margin
+            img_h = img_w * pix.height / max(pix.width, 1)
+            max_h = min(360, height - margin - y)
+            if img_h > max_h:
+                img_h = max_h
+                img_w = img_h * pix.width / max(pix.height, 1)
+            page.insert_image(fitz.Rect(margin, y, margin + img_w, y + img_h), filename=str(image_path))
+            y += img_h + 14
+        except Exception as exc:
+            y += page.insert_textbox(fitz.Rect(margin, y, width - margin, y + 32), f"[image skipped: {exc}]", fontsize=9, fontname=font)
+            y += 8
+
+    ensure_dir(output_path.parent)
+    doc.save(str(output_path))
+    doc.close()
+
+
+def generate_deep_reading_package(config: Config, record: dict[str, Any]) -> dict[str, Any]:
+    summary_md = resolve_existing_path(record.get("summary_md"), kind="file")
+    package_dir = resolve_existing_path(record.get("package_dir"), kind="dir")
+    if summary_md is None:
+        raise SyncError("Existing summary markdown is required before generating a deep package.")
+    if package_dir is None:
+        package_dir = summary_md.parent
+    summary_text = read_text(summary_md)
+    output_dir = deep_package_dir_for_record(record)
+    ensure_dir(output_dir)
+    stem = sanitize_windows_filename(record.get("summary_stem") or summary_md.stem, summary_md.stem, max_length=96)
+    images = collect_deep_package_images(summary_text, package_dir)
+    docx_path = output_dir / f"{stem}-deep-reading.docx"
+    pdf_path = output_dir / f"{stem}-deep-reading.pdf"
+    manifest_path = output_dir / "deep_reading_manifest.json"
+    log(f"[deep-package] {summary_md.name}")
+    write_deep_docx(record, summary_text, images, docx_path)
+    write_deep_pdf(record, summary_text, images, pdf_path)
+    manifest = {
+        "summary_md": str(summary_md.resolve()),
+        "package_dir": str(package_dir.resolve()),
+        "docx": str(docx_path.resolve()),
+        "pdf": str(pdf_path.resolve()),
+        "images": [str(path) for path in images],
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    updated = dict(record)
+    updated["deep_package_dir"] = str(output_dir.resolve())
+    updated["deep_package_docx"] = str(docx_path.resolve())
+    updated["deep_package_pdf"] = str(pdf_path.resolve())
+    updated["deep_package_manifest"] = str(manifest_path.resolve())
+    updated["deep_package_generated_at"] = manifest["generated_at"]
+    return updated
 
 
 def enrich_record_with_match(
@@ -3296,7 +3626,7 @@ def discover_pdfs(config: Config, explicit: list[Path] | None = None) -> list[Pa
     return sorted(config.paper_dir.rglob("*.pdf"))
 
 
-def run_once(config: Config, explicit_pdfs: list[Path] | None = None) -> int:
+def run_once(config: Config, explicit_pdfs: list[Path] | None = None, *, force_regenerate: bool = False) -> int:
     ensure_dir(config.cache_root)
     ensure_dir(config.export_path.parent)
     ensure_dir(config.obsidian_vault_dir)
@@ -3343,7 +3673,7 @@ def run_once(config: Config, explicit_pdfs: list[Path] | None = None) -> int:
                 state_record=previous,
                 export_index=export_index,
                 spec_text=spec_text,
-                spec_changed=spec_changed,
+                spec_changed=spec_changed or force_regenerate,
             )
             new_state_items[key] = record
             processed_records.append(record)
@@ -3367,6 +3697,112 @@ def run_once(config: Config, explicit_pdfs: list[Path] | None = None) -> int:
         },
     )
     log("[done] Sync pass completed.")
+    return 0
+
+
+def _state_and_items(config: Config) -> tuple[dict[str, Any], dict[str, Any]]:
+    state = load_json(config.state_path, {"spec_hash": "", "items": {}})
+    items_state = state.get("items", {}) if isinstance(state.get("items"), dict) else {}
+    return state, items_state
+
+
+def run_deep_package(config: Config, explicit_pdfs: list[Path] | None = None) -> int:
+    if not explicit_pdfs:
+        raise SyncError("The deep-package command requires at least one --pdf path.")
+    state, items_state = _state_and_items(config)
+    updated_records: list[dict[str, Any]] = []
+    for pdf_path in discover_pdfs(config, explicit_pdfs):
+        key = str(pdf_path.resolve())
+        previous = items_state.get(key) if isinstance(items_state.get(key), dict) else None
+        if previous is None:
+            raise SyncError(f"No existing summary state found for {pdf_path.name}. Generate a summary first.")
+        package_missing = resolve_existing_path(previous.get("package_dir"), kind="dir") is None
+        summary_md = resolve_existing_path(previous.get("summary_md"), kind="file")
+        if summary_md is None:
+            raise SyncError(f"No existing summary markdown found for {pdf_path.name}.")
+        if package_missing:
+            package_dir = package_summary(config, summary_md, pdf_path, clean=True)
+            previous["package_dir"] = str(package_dir.resolve())
+        record = generate_deep_reading_package(config, previous)
+        record = sync_obsidian_package(config, record, copy_package=True)
+        items_state[key] = record
+        updated_records.append(record)
+        sync_zotero_record(config, record)
+
+    all_records = [record for record in items_state.values() if isinstance(record, dict)]
+    rebuild_obsidian_indexes(config, all_records)
+    save_json(
+        config.state_path,
+        {
+            **state,
+            "items": items_state,
+            "last_deep_package_run": time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
+    )
+    log(f"[done] Deep reading package generated for {len(updated_records)} item(s).")
+    return 0
+
+
+def build_summary_quality_prompt(config: Config, record: dict[str, Any], summary_text: str, spec_text: str) -> list[dict[str, Any]]:
+    system_prompt = (
+        "You are a strict QA reviewer for Chinese paper-reading Markdown summaries. "
+        "Return only a concise Markdown report in Chinese."
+    )
+    user_prompt = (
+        "请检查下面这份论文总结是否符合规范，重点检查：结构完整性、图表/公式引用是否可疑、"
+        "是否有明显幻觉、是否缺少证据页码或关键实验指标、是否适合进入 Obsidian/Zotero 工作流。\n\n"
+        f"默认规范：\n{spec_text}\n\n"
+        f"论文元数据：\n{json.dumps({k: record.get(k) for k in ['title', 'year', 'source', 'authors', 'doi', 'arxiv', 'pdf_path']}, ensure_ascii=False, indent=2)}\n\n"
+        f"待检查 Markdown：\n{summary_text}\n\n"
+        "输出格式：\n"
+        "## 结论\n- 通过/需修改\n\n"
+        "## 问题清单\n- [严重程度] 问题、依据、建议\n\n"
+        "## 图表与公式风险\n- ...\n\n"
+        "## 建议修订\n- ...\n"
+    )
+    return [
+        {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+        {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
+    ]
+
+
+def run_check_summary(config: Config, explicit_pdfs: list[Path] | None = None) -> int:
+    if not explicit_pdfs:
+        raise SyncError("The check-summary command requires at least one --pdf path.")
+    if not config.openai_enabled and not codex_cli_available(config):
+        raise SyncError("No enabled model backend is available for summary QA.")
+    spec_text = read_text(config.spec_path)
+    state, items_state = _state_and_items(config)
+    checked = 0
+    for pdf_path in discover_pdfs(config, explicit_pdfs):
+        key = str(pdf_path.resolve())
+        record = items_state.get(key) if isinstance(items_state.get(key), dict) else None
+        if record is None:
+            raise SyncError(f"No existing summary state found for {pdf_path.name}.")
+        summary_md = resolve_existing_path(record.get("summary_md"), kind="file")
+        if summary_md is None:
+            raise SyncError(f"No existing summary markdown found for {pdf_path.name}.")
+        summary_text = read_text(summary_md)
+        log(f"[check] {summary_md.name}")
+        report = call_model(config, build_summary_quality_prompt(config, record, summary_text, spec_text))
+        output_dir = deep_package_dir_for_record(record)
+        ensure_dir(output_dir)
+        report_path = output_dir / f"{summary_md.stem}-summary-quality-check.md"
+        report_path.write_text(report.rstrip() + "\n", encoding="utf-8")
+        record["summary_quality_check"] = str(report_path.resolve())
+        record["summary_quality_checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        items_state[key] = record
+        checked += 1
+
+    save_json(
+        config.state_path,
+        {
+            **state,
+            "items": items_state,
+            "last_summary_check_run": time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
+    )
+    log(f"[done] Summary QA completed for {checked} item(s).")
     return 0
 
 
@@ -3440,7 +3876,11 @@ def main() -> int:
         return watch(config, args.interval)
     if args.command == "compare":
         return run_compare(config, args.pdf)
-    return run_once(config, args.pdf)
+    if args.command == "deep-package":
+        return run_deep_package(config, args.pdf)
+    if args.command == "check-summary":
+        return run_check_summary(config, args.pdf)
+    return run_once(config, args.pdf, force_regenerate=bool(args.force_regenerate))
 
 
 if __name__ == "__main__":

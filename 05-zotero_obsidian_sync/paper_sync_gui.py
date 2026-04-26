@@ -671,6 +671,7 @@ class PaperSyncGUI(tk.Tk):
         self.summary_progress_active = False
         self.summary_progress_total = 0
         self.summary_progress_outcome = ""
+        self.pending_deep_package_items: list[dict[str, Any]] = []
         self.summary_runtime_profiles = self._load_summary_runtime_profiles()
         self.summary_backend_var = tk.StringVar()
         self.summary_model_var = tk.StringVar()
@@ -1135,6 +1136,12 @@ class PaperSyncGUI(tk.Tk):
             command=self._summarize_selected_items,
         )
         self.btn_summarize.pack(side="left")
+        self.btn_deep_package = ttk.Button(
+            collection_actions,
+            text="Deep DOCX/PDF Package",
+            command=self._generate_deep_package_selected_items,
+        )
+        self.btn_deep_package.pack(side="left", padx=(8, 0))
         self.btn_compare = ttk.Button(
             collection_actions,
             text="Compare / 对比总结",
@@ -1500,6 +1507,8 @@ class PaperSyncGUI(tk.Tk):
                 self._append_summary_progress_log(str(payload))
             elif kind == "summary-progress-stage":
                 self._set_summary_progress_stage(str(payload))
+            elif kind == "summary-finished-items":
+                self.pending_deep_package_items = list(payload or []) if isinstance(payload, list) else []
             elif kind == "task-finished":
                 self._finish_background_task()
             elif kind == "error-dialog":
@@ -1753,6 +1762,14 @@ class PaperSyncGUI(tk.Tk):
         self._set_task("Idle")
         should_close = self.close_after_task and not self.background_task_failed
         self.close_after_task = False
+        pending_deep_package_items = self.pending_deep_package_items
+        self.pending_deep_package_items = []
+        if pending_deep_package_items and not self.background_task_failed and not should_close:
+            if messagebox.askyesno(
+                "Deep Reading Package",
+                "Summary generation finished. Generate the deep DOCX/PDF package now?",
+            ):
+                self.after(50, lambda items=pending_deep_package_items: self._generate_deep_package_for_items(items))
         if should_close:
             self.after(50, self.destroy)
 
@@ -1862,11 +1879,199 @@ class PaperSyncGUI(tk.Tk):
         self.wait_window(dialog)
         return result["value"]
 
+    def _ask_existing_summary_action(self) -> str | None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Existing summary found")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.geometry("520x220")
+        ttk.Label(
+            dialog,
+            text="已有总结文档。请选择本次操作：",
+            anchor="w",
+        ).pack(fill="x", padx=16, pady=(16, 10))
+        result: dict[str, str | None] = {"value": None}
+
+        def choose(value: str) -> None:
+            result["value"] = value
+            dialog.destroy()
+
+        body = ttk.Frame(dialog)
+        body.pack(fill="both", expand=True, padx=16, pady=4)
+        ttk.Button(body, text="1. 重新生成总结", command=lambda: choose("regenerate")).pack(fill="x", pady=4)
+        ttk.Button(body, text="2. 生成精读 DOCX/PDF 包", command=lambda: choose("deep-package")).pack(fill="x", pady=4)
+        ttk.Button(body, text="3. 检查规范性（AI）", command=lambda: choose("check-summary")).pack(fill="x", pady=4)
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=16, pady=(4, 12))
+        ttk.Button(buttons, text="取消", command=lambda: choose("cancel")).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
+        self.wait_window(dialog)
+        return result["value"]
+
+    def _items_with_existing_summary(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        existing: list[dict[str, Any]] = []
+        for item in items:
+            state_record = item.get("state_record")
+            if isinstance(state_record, dict):
+                summary_md = str(state_record.get("summary_md") or "")
+                if summary_md and Path(summary_md).exists():
+                    existing.append(item)
+        return existing
+
+    def _validate_selected_model_runtime(self) -> tuple[str, str, str] | None:
+        self._sync_current_summary_profile()
+        self._persist_summary_runtime_profiles()
+        backend_key, model_name, reasoning_effort = self._selected_summary_runtime()
+        if backend_key == "openai" and not sp.has_openai_api_key(self.config_data):
+            messagebox.showerror(
+                "Paper Sync Manager",
+                f"OpenAI API is selected, but {self.config_data.openai_api_key_env} is not set.",
+            )
+            return None
+        if backend_key == "openai_compatible" and not sp.has_compatible_api_key(self.config_data):
+            messagebox.showerror(
+                "Paper Sync Manager",
+                f"OpenAI-compatible API is selected, but {self.config_data.compatible_api_key_env} is not set.",
+            )
+            return None
+        if backend_key == "codex" and not sp.codex_cli_available(self.config_data):
+            messagebox.showerror(
+                "Paper Sync Manager",
+                "Codex CLI is selected, but no usable codex executable was found in config, PATH, or installed VS Code extensions.",
+            )
+            return None
+        return backend_key, model_name, reasoning_effort
+
+    def _run_pipeline_for_items(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        command: str,
+        task_label: str,
+        progress_title: str,
+        require_model: bool = False,
+        summary_user_request: str = "",
+        force_regenerate: bool = False,
+    ) -> bool:
+        pdf_jobs: list[tuple[dict[str, Any], Path]] = []
+        for item in items:
+            preferred_pdf = item.get("preferred_pdf", "")
+            if not preferred_pdf:
+                self._log(f"[skip] {item.get('title')} has no resolvable PDF path.")
+                continue
+            pdf_jobs.append((item, Path(preferred_pdf)))
+        if not pdf_jobs:
+            messagebox.showinfo("Paper Sync Manager", "No resolvable PDF path found for the selected items.")
+            return False
+
+        runtime = self._validate_selected_model_runtime() if require_model else None
+        if require_model and runtime is None:
+            return False
+        backend_key, model_name, reasoning_effort = runtime or ("", "", "")
+
+        def worker() -> None:
+            try:
+                completed_items: list[dict[str, Any]] = []
+                for index, (item, pdf_path) in enumerate(pdf_jobs, start=1):
+                    if self.stop_requested.is_set():
+                        self._enqueue_log(f"{task_label} stopped by user.")
+                        break
+                    self.ui_queue.put(
+                        (
+                            "summary-progress-item",
+                            {
+                                "index": index,
+                                "total": len(pdf_jobs),
+                                "title": str(item.get("title") or "Untitled"),
+                                "pdf": str(pdf_path),
+                            },
+                        )
+                    )
+                    self._enqueue_log(f"[{command}] {item.get('title')} <- {pdf_path}")
+                    cmd = [
+                        str(self.config_data.tools_python),
+                        str(SCRIPT_DIR / "sync_pipeline.py"),
+                        command,
+                        "--config",
+                        str(SCRIPT_DIR / "config.json"),
+                        "--pdf",
+                        str(pdf_path),
+                    ]
+                    if require_model:
+                        cmd.extend(
+                            [
+                                "--summary-backend",
+                                backend_key,
+                                "--summary-model",
+                                model_name,
+                                "--summary-reasoning-effort",
+                                reasoning_effort,
+                            ]
+                        )
+                    if summary_user_request:
+                        cmd.extend(["--summary-user-request", summary_user_request])
+                    if force_regenerate:
+                        cmd.append("--force-regenerate")
+                    self._run_subprocess_streaming(cmd, pdf_path.name)
+                    completed_items.append(item)
+                if command == "once" and force_regenerate and completed_items:
+                    self.ui_queue.put(("summary-finished-items", completed_items))
+                self.ui_queue.put(("refresh", None))
+            except Exception as exc:
+                self.background_task_failed = True
+                self.ui_queue.put(("error-dialog", exc))
+                self._enqueue_log(f"[{command}-error] {exc}")
+            finally:
+                self.ui_queue.put(("task-finished", None))
+
+        self._open_summary_progress_dialog(len(pdf_jobs))
+        if not self._start_background_task(progress_title, worker):
+            self._close_summary_progress_dialog()
+            return False
+        return True
+
+    def _generate_deep_package_for_items(self, items: list[dict[str, Any]]) -> bool:
+        return self._run_pipeline_for_items(
+            items,
+            command="deep-package",
+            task_label="Deep package",
+            progress_title="Generate Deep DOCX/PDF Package",
+        )
+
+    def _generate_deep_package_selected_items(self) -> None:
+        selected_items = self._selected_collection_items()
+        if not selected_items:
+            messagebox.showinfo("Paper Sync Manager", "Select one or more collection items first.")
+            return
+        self._generate_deep_package_for_items(selected_items)
+
+    def _check_summary_selected_items(self, items: list[dict[str, Any]]) -> bool:
+        return self._run_pipeline_for_items(
+            items,
+            command="check-summary",
+            task_label="Summary QA",
+            progress_title="Check Summary Quality",
+            require_model=True,
+        )
+
     def _summarize_selected_items(self) -> None:
         selected_items = self._selected_collection_items()
         if not selected_items:
             messagebox.showinfo("Paper Sync Manager", "Select one or more collection items first.")
             return
+        force_existing_regenerate = False
+        existing_summary_items = self._items_with_existing_summary(selected_items)
+        if existing_summary_items:
+            action = self._ask_existing_summary_action()
+            if action in (None, "cancel"):
+                return
+            if action == "deep-package":
+                self._generate_deep_package_for_items(existing_summary_items)
+                return
+            if action == "check-summary":
+                self._check_summary_selected_items(existing_summary_items)
+                return
+            force_existing_regenerate = action == "regenerate"
         summary_user_request = self._ask_summary_user_request("Summary requirements / 总结要求")
         if summary_user_request is None:
             return
@@ -1949,7 +2154,10 @@ class PaperSyncGUI(tk.Tk):
                         "--pdf",
                         str(pdf_path),
                     ]
+                    if force_existing_regenerate:
+                        cmd.append("--force-regenerate")
                     self._run_subprocess_streaming(cmd, pdf_path.name)
+                self.ui_queue.put(("summary-finished-items", [item for item, _ in pdf_jobs]))
                 self.ui_queue.put(("refresh", None))
             except Exception as exc:
                 self.background_task_failed = True
