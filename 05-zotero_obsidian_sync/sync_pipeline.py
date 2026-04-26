@@ -3050,6 +3050,25 @@ def markdown_image_refs(text: str) -> list[str]:
     return [match.group(1).strip() for match in re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", text)]
 
 
+def markdown_image_entries(text: str, context_radius: int = 2) -> list[dict[str, Any]]:
+    lines = text.splitlines()
+    entries: list[dict[str, Any]] = []
+    pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+    for index, line in enumerate(lines):
+        for match in pattern.finditer(line):
+            start = max(0, index - context_radius)
+            end = min(len(lines), index + context_radius + 1)
+            entries.append(
+                {
+                    "line": index + 1,
+                    "alt": match.group(1).strip(),
+                    "ref": match.group(2).strip(),
+                    "context": "\n".join(lines[start:end]).strip(),
+                }
+            )
+    return entries
+
+
 def markdown_plain_lines(text: str) -> list[tuple[str, str]]:
     lines: list[tuple[str, str]] = []
     in_code = False
@@ -3084,6 +3103,164 @@ def resolve_package_image(package_dir: Path, ref: str) -> Path | None:
     if candidate.is_file() and candidate.suffix.lower() in {".png", ".jpg", ".jpeg"}:
         return candidate
     return None
+
+
+def image_dimensions_for_file(path: Path) -> tuple[int, int] | None:
+    try:
+        import fitz
+
+        with fitz.open(str(path)) as image_doc:
+            if image_doc.page_count < 1:
+                return None
+            rect = image_doc[0].rect
+            return int(round(rect.width)), int(round(rect.height))
+    except Exception:
+        return None
+
+
+def representative_package_page_dimensions(package_dir: Path) -> tuple[int, int] | None:
+    candidates: list[Path] = []
+    for pattern in (
+        "pages/page-*.png",
+        "extracted/*/pages/page-*.png",
+        "extracted/**/pages/page-*.png",
+    ):
+        candidates.extend(sorted(package_dir.glob(pattern)))
+    for candidate in candidates:
+        size = image_dimensions_for_file(candidate)
+        if size is not None:
+            return size
+    return None
+
+
+def looks_like_full_page_image(
+    image_size: tuple[int, int] | None,
+    page_size: tuple[int, int] | None,
+) -> bool:
+    if image_size is None or page_size is None:
+        return False
+    image_width, image_height = image_size
+    page_width, page_height = page_size
+    if min(image_width, image_height, page_width, page_height) <= 0:
+        return False
+    width_ratio = image_width / page_width
+    height_ratio = image_height / page_height
+    image_ratio = image_width / max(image_height, 1)
+    page_ratio = page_width / max(page_height, 1)
+    area_ratio = (image_width * image_height) / max(page_width * page_height, 1)
+    return width_ratio >= 0.82 and height_ratio >= 0.82 and area_ratio >= 0.70 and abs(image_ratio - page_ratio) <= 0.18
+
+
+def build_image_reference_audit(record: dict[str, Any], summary_text: str) -> dict[str, Any]:
+    summary_md = resolve_existing_path(record.get("summary_md"), kind="file")
+    package_dir = resolve_existing_path(record.get("package_dir"), kind="dir")
+    if package_dir is None and summary_md is not None:
+        package_dir = summary_md.parent
+    if package_dir is None:
+        package_dir = Path(".").resolve()
+    page_size = representative_package_page_dimensions(package_dir)
+    entries: list[dict[str, Any]] = []
+    issue_counts: dict[str, int] = {}
+    for entry in markdown_image_entries(summary_text):
+        ref = str(entry["ref"])
+        resolved = resolve_package_image(package_dir, ref)
+        issues: list[str] = []
+        size: tuple[int, int] | None = None
+        file_size = 0
+        if resolved is None:
+            issues.append("missing-or-external-image")
+        else:
+            size = image_dimensions_for_file(resolved)
+            try:
+                file_size = resolved.stat().st_size
+            except OSError:
+                file_size = 0
+            if size is None:
+                issues.append("unreadable-image")
+            else:
+                width, height = size
+                if width < 140 or height < 90:
+                    issues.append("too-small-likely-icon-or-fragment")
+                if width / max(height, 1) > 8 or height / max(width, 1) > 8:
+                    issues.append("extreme-aspect-ratio-possible-bad-crop")
+                if looks_like_full_page_image(size, page_size):
+                    issues.append("full-page-screenshot-possible-bad-figure-crop")
+            if file_size and file_size < 3500:
+                issues.append("very-small-file-possible-placeholder")
+        for issue in issues:
+            issue_counts[issue] = issue_counts.get(issue, 0) + 1
+        entries.append(
+            {
+                "line": entry["line"],
+                "alt": entry["alt"],
+                "ref": ref,
+                "resolved": str(resolved) if resolved is not None else "",
+                "exists": bool(resolved and resolved.exists()),
+                "size": list(size) if size is not None else None,
+                "file_size": file_size,
+                "issues": issues,
+                "context": entry["context"],
+            }
+        )
+    suspect_entries = [entry for entry in entries if entry["issues"]]
+    return {
+        "title": record.get("title") or record.get("summary_stem") or "",
+        "summary_md": str(summary_md) if summary_md is not None else "",
+        "package_dir": str(package_dir),
+        "page_size_hint": list(page_size) if page_size is not None else None,
+        "image_ref_count": len(entries),
+        "suspect_count": len(suspect_entries),
+        "issue_counts": issue_counts,
+        "suspect_entries": suspect_entries[:80],
+    }
+
+
+def render_image_audit_report(audit: dict[str, Any], ai_report: str | None) -> str:
+    lines = [
+        "# Summary Image QA",
+        "",
+        f"- Title: {audit.get('title') or 'N/A'}",
+        f"- Summary: `{audit.get('summary_md') or 'N/A'}`",
+        f"- Package: `{audit.get('package_dir') or 'N/A'}`",
+        f"- Image references checked: {audit.get('image_ref_count', 0)}",
+        f"- Suspect references: {audit.get('suspect_count', 0)}",
+        "",
+    ]
+    if not audit.get("suspect_count"):
+        lines.extend(
+            [
+                "## 结论",
+                "",
+                "本地图片 QA 通过：Markdown 中的图片引用均可解析，未发现缺失图片、疑似整页截图、过小碎片图或极端比例裁剪风险。本次未调用 AI，以节省模型资源。",
+                "",
+            ]
+        )
+        return "\n".join(lines).rstrip() + "\n"
+
+    lines.extend(["## 本地规则发现的问题", ""])
+    issue_counts = audit.get("issue_counts", {})
+    if isinstance(issue_counts, dict):
+        for issue, count in sorted(issue_counts.items()):
+            lines.append(f"- {issue}: {count}")
+    lines.append("")
+    lines.append("## 可疑图片引用")
+    lines.append("")
+    for entry in audit.get("suspect_entries", []):
+        if not isinstance(entry, dict):
+            continue
+        lines.append(f"### Line {entry.get('line')}: `{entry.get('ref')}`")
+        lines.append(f"- Issues: {', '.join(entry.get('issues') or [])}")
+        lines.append(f"- Size: {entry.get('size') or 'N/A'}")
+        lines.append(f"- Exists: {entry.get('exists')}")
+        if entry.get("context"):
+            lines.append("")
+            lines.append("```markdown")
+            lines.append(str(entry.get("context")))
+            lines.append("```")
+        lines.append("")
+    if ai_report:
+        lines.extend(["## AI 判断", "", ai_report.rstrip(), ""])
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def collect_deep_package_images(summary_text: str, package_dir: Path, limit: int = 12) -> list[Path]:
@@ -3743,22 +3920,23 @@ def run_deep_package(config: Config, explicit_pdfs: list[Path] | None = None) ->
     return 0
 
 
-def build_summary_quality_prompt(config: Config, record: dict[str, Any], summary_text: str, spec_text: str) -> list[dict[str, Any]]:
+def build_summary_quality_prompt(config: Config, record: dict[str, Any], image_audit: dict[str, Any]) -> list[dict[str, Any]]:
     system_prompt = (
-        "You are a strict QA reviewer for Chinese paper-reading Markdown summaries. "
-        "Return only a concise Markdown report in Chinese."
+        "You are a strict but low-cost QA reviewer for a paper-reading workflow. "
+        "Focus only on Markdown image references, figure/formula crop risks, and whether the cited image likely matches its surrounding text. "
+        "Return only a concise Markdown report in Chinese. Do not review the whole paper summary."
     )
     user_prompt = (
-        "请检查下面这份论文总结是否符合规范，重点检查：结构完整性、图表/公式引用是否可疑、"
-        "是否有明显幻觉、是否缺少证据页码或关键实验指标、是否适合进入 Obsidian/Zotero 工作流。\n\n"
-        f"默认规范：\n{spec_text}\n\n"
+        "请基于下面的本地图像 QA 结果，重点判断 Markdown 总结中的图片引用和裁剪是否可能有问题。\n"
+        "本地规则已经检查了文件是否存在、图片尺寸、疑似整页截图、过小碎片图和极端比例。"
+        "你只需要复核这些可疑项，给出是否需要人工打开核查、建议如何修复。"
+        "不要做全文规范性审稿，不要讨论与图片无关的内容，以节省资源。\n\n"
         f"论文元数据：\n{json.dumps({k: record.get(k) for k in ['title', 'year', 'source', 'authors', 'doi', 'arxiv', 'pdf_path']}, ensure_ascii=False, indent=2)}\n\n"
-        f"待检查 Markdown：\n{summary_text}\n\n"
-        "输出格式：\n"
+        f"图像 QA 结果：\n{json.dumps(image_audit, ensure_ascii=False, indent=2)}\n\n"
+        "输出格式必须简洁：\n"
         "## 结论\n- 通过/需修改\n\n"
-        "## 问题清单\n- [严重程度] 问题、依据、建议\n\n"
-        "## 图表与公式风险\n- ...\n\n"
-        "## 建议修订\n- ...\n"
+        "## 图片问题\n- [严重程度] 行号、图片路径、问题、建议\n\n"
+        "## 人工复核优先级\n- ...\n"
     )
     return [
         {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
@@ -3771,7 +3949,6 @@ def run_check_summary(config: Config, explicit_pdfs: list[Path] | None = None) -
         raise SyncError("The check-summary command requires at least one --pdf path.")
     if not config.openai_enabled and not codex_cli_available(config):
         raise SyncError("No enabled model backend is available for summary QA.")
-    spec_text = read_text(config.spec_path)
     state, items_state = _state_and_items(config)
     checked = 0
     for pdf_path in discover_pdfs(config, explicit_pdfs):
@@ -3783,14 +3960,22 @@ def run_check_summary(config: Config, explicit_pdfs: list[Path] | None = None) -
         if summary_md is None:
             raise SyncError(f"No existing summary markdown found for {pdf_path.name}.")
         summary_text = read_text(summary_md)
-        log(f"[check] {summary_md.name}")
-        report = call_model(config, build_summary_quality_prompt(config, record, summary_text, spec_text))
+        log(f"[check] image refs in {summary_md.name}")
+        image_audit = build_image_reference_audit(record, summary_text)
+        ai_report = None
+        if image_audit.get("suspect_count"):
+            log(f"[check] AI image QA for {summary_md.name}: {image_audit.get('suspect_count')} suspect ref(s)")
+            ai_report = call_model(config, build_summary_quality_prompt(config, record, image_audit))
+        else:
+            log(f"[check] local image QA passed for {summary_md.name}; skip AI call")
+        report = render_image_audit_report(image_audit, ai_report)
         output_dir = deep_package_dir_for_record(record)
         ensure_dir(output_dir)
-        report_path = output_dir / f"{summary_md.stem}-summary-quality-check.md"
-        report_path.write_text(report.rstrip() + "\n", encoding="utf-8")
+        report_path = output_dir / f"{summary_md.stem}-image-quality-check.md"
+        report_path.write_text(report, encoding="utf-8")
         record["summary_quality_check"] = str(report_path.resolve())
         record["summary_quality_checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        record["summary_quality_check_focus"] = "image-references-and-crops"
         items_state[key] = record
         checked += 1
 
