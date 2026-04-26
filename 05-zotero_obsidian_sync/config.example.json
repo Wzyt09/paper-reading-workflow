@@ -1,0 +1,66 @@
+{
+  "workspace_root": "..",
+  "paper_dir": "../01-paper",
+  "summary_root": "..",
+  "spec_path": "../02-paper_summary_specs/default.md",
+  "cache_root": ".state",
+  "state_path": ".state/sync_state.json",
+  "poll_interval_seconds": 30,
+  "package_append_auto_materials": true,
+  "summary": {
+    "backend": "auto"
+  },
+  "openai": {
+    "enabled": true,
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "gpt-5.4-mini",
+    "reasoning_effort": "medium",
+    "max_input_chars": 800000,
+    "endpoint": "https://api.openai.com/v1/responses"
+  },
+  "openai_compatible": {
+    "enabled": true,
+    "api_key_env": "OPENAI_COMPATIBLE_API_KEY",
+    "model": "deepseek-chat",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "https://api.deepseek.com/v1/chat/completions",
+    "temperature": 0.2
+  },
+  "codex_cli": {
+    "enabled": true,
+    "command": "codex",
+    "model": null
+  },
+  "zotero_export": {
+    "path": "exports/01-paper-sync.json",
+    "bbt_jsonrpc_url": "http://localhost:23119/better-bibtex/json-rpc",
+    "collection_path": "//01-paper-sync",
+    "translator": "BetterBibTeX JSON",
+    "display_options": {
+      "exportNotes": false,
+      "useJournalAbbreviation": false
+    },
+    "replace": true
+  },
+  "zotero_local": {
+    "enabled": true,
+    "db_path": "",
+    "collection_name": "01-paper-sync",
+    "fallback_to_all_pdf_items": true
+  },
+  "zotero_api": {
+    "enabled": false,
+    "user_id": "",
+    "library_type": "users",
+    "api_key_env": "ZOTERO_API_KEY",
+    "update_summary_note": true,
+    "attach_summary_markdown": true,
+    "summary_attachment_mode": "linked_file"
+  },
+  "obsidian": {
+    "vault_dir": "obsidian_vault",
+    "papers_subdir": "papers",
+    "tags_subdir": "tags",
+    "tag_prefix": "zotero"
+  }
+}

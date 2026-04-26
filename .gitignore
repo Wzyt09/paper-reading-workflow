@@ -1,0 +1,45 @@
+# Private paper library and generated outputs
+01-paper/
+04-Image/
+06-paper_comparisons/
+images/
+zotero/
+导航页面/
+*.pdf
+
+# Packaged single-paper summary folders and root generated summary notes
+/*-20*/
+/*.md
+!/README.md
+!/LICENSE
+
+# Runtime state, caches, and extracted PDF material
+.codex_tmp/
+**/.state/
+**/.tmp*/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/venv/
+03-tools/pdf_tools/output/
+03-tools/paper_workflow/.tmp_extract/
+03-tools/paper_workflow/.tmp_ref_extract/
+03-tools/paper_workflow/.tmp_ref_pdfs/
+
+# Local/private sync configuration
+05-zotero_obsidian_sync/config.json
+05-zotero_obsidian_sync/exports/
+05-zotero_obsidian_sync/manual_queue/
+05-zotero_obsidian_sync/obsidian_vault/
+05-zotero_obsidian_sync/.tmp_test/
+*.lnk
+
+# Logs and local OS/editor files
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
