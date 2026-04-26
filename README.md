@@ -28,10 +28,20 @@ Private paper data, generated summaries, PDF files, Obsidian vaults, Zotero stat
 ## Quick Start
 
 1. Install Python 3.11+.
-2. Copy the example config:
+2. Run the setup script:
+
+```powershell
+.\setup_windows.ps1
+```
+
+This creates `03-tools/pdf_tools/.venv`, installs PDF parsing dependencies, and creates `05-zotero_obsidian_sync/config.json` from the example if it does not exist.
+
+Manual setup:
 
 ```powershell
 Copy-Item .\05-zotero_obsidian_sync\config.example.json .\05-zotero_obsidian_sync\config.json
+py -3 -m venv .\03-tools\pdf_tools\.venv
+.\03-tools\pdf_tools\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
 ```
 
 3. Put PDFs under `01-paper/`.
@@ -116,4 +126,3 @@ The current release is a local Python/GUI workflow that integrates with Zotero t
 - Plugin settings: model provider, API key env names, output folders.
 
 This keeps the heavy PDF/model workflow outside Zotero while giving Zotero a native entry point.
-
